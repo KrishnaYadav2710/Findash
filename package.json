@@ -1,0 +1,13 @@
+{
+  "name": "finsight-gemini-dashboard",
+  "version": "4.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node server.js", "dev": "node --watch server.js"},
+  "dependencies": {
+    "dotenv": "latest",
+    "exceljs": "latest",
+    "express": "latest",
+    "multer": "latest"
+  }
+}
