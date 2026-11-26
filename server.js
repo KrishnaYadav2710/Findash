@@ -67,7 +67,7 @@ const PORT =
 
 const GEMINI_MODEL =
   process.env.GEMINI_MODEL ||
-  "gemini-3.8-flash";
+  "gemini-3.1-flash-lite";
 
 
 const GEMINI_API_KEY =
@@ -1476,7 +1476,7 @@ async function geminiGenerate(
   const primaryModel =
     String(
       GEMINI_MODEL ||
-      "gemini-3.8-flash"
+      "gemini-3.1-flash-lite"
     ).trim();
 
 
@@ -3318,346 +3318,405 @@ function extractFinancialsLocally(
 
 
 /* ============================================================
-   14. FINANCIAL EXTRACTION — LOCAL ONLY
+   14. FINANCIAL EXTRACTION — GEMINI-FIRST
    ============================================================ */
 
-/*
- * THIS ROUTE DOES NOT CALL GEMINI.
- *
- * THIS ROUTE DOES NOT CALL OPENAI.
- *
- * Flow:
- *
- * PDF
- * ↓
- * pdf-parse
- * ↓
- * local text
- * ↓
- * deterministic financial extraction
- * ↓
- * dashboard JSON
- */
+function dashboardNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
 
+  let s = String(value).trim();
+  if (!s || /^(n\/a|na|null|not available|not disclosed|—|-)$/i.test(s)) return null;
+
+  let negative = false;
+  if (/^\(.+\)$/.test(s)) {
+    negative = true;
+    s = s.slice(1, -1);
+  }
+
+  s = s.replace(/[₹,$£€]/g, "").replace(/,/g, "").trim();
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return negative ? -n : n;
+}
+
+function dashboardRow(row = {}, companyName = "Unknown company") {
+  let financialYear = row.financial_year ?? row.financialYear ?? null;
+  let year = dashboardNumber(row.year ?? row.end_year);
+
+  if (!year && financialYear) {
+    const years = String(financialYear).match(/20\d{2}/g);
+    if (years?.length) year = Math.max(...years.map(Number));
+  }
+
+  if (!financialYear && year) {
+    financialYear = `${year - 1}-${String(year).slice(-2)}`;
+  }
+
+  return {
+    company: row.company ?? row.company_name ?? companyName,
+    financial_year: financialYear,
+    year,
+    statement_basis: row.statement_basis ?? "Consolidated",
+    source_unit: "INR crore",
+    original_source_unit: row.original_source_unit ?? row.source_unit ?? null,
+
+    revenue: dashboardNumber(row.revenue ?? row.revenue_from_operations),
+    total_income: dashboardNumber(row.total_income),
+    other_income: dashboardNumber(row.other_income),
+    revenue_basis: row.revenue_basis ?? (row.revenue != null ? "reported revenue" : null),
+
+    ebitda: dashboardNumber(row.ebitda),
+    cogs: dashboardNumber(row.cogs ?? row.cost_of_goods_sold),
+    operating_income: dashboardNumber(row.operating_income ?? row.operating_profit ?? row.ebit),
+    net_income: dashboardNumber(
+      row.net_income ?? row.net_profit ?? row.profit_after_tax ?? row.pat ?? row.profit_for_the_year
+    ),
+    finance_cost: dashboardNumber(row.finance_cost ?? row.finance_costs ?? row.interest_expense),
+
+    total_assets: dashboardNumber(row.total_assets),
+    current_assets: dashboardNumber(row.current_assets ?? row.total_current_assets),
+    current_liabilities: dashboardNumber(row.current_liabilities ?? row.total_current_liabilities),
+    total_debt: dashboardNumber(row.total_debt ?? row.total_borrowings ?? row.borrowings),
+    cash: dashboardNumber(
+      row.net_debt_cash ?? row.cash ?? row.cash_and_equivalents ?? row.cash_and_cash_equivalents
+    ),
+    net_debt_cash: dashboardNumber(
+      row.net_debt_cash ?? row.cash ?? row.cash_and_equivalents ?? row.cash_and_cash_equivalents
+    ),
+    net_debt_cash_basis: row.net_debt_cash_basis ?? "cash and cash equivalents",
+    total_equity: dashboardNumber(row.total_equity ?? row.shareholders_equity ?? row.shareholder_equity),
+    inventory: dashboardNumber(row.inventory ?? row.inventories),
+    accounts_receivable: dashboardNumber(
+      row.accounts_receivable ?? row.receivables ?? row.trade_receivables
+    ),
+    accounts_payable: dashboardNumber(row.accounts_payable ?? row.payables ?? row.trade_payables),
+
+    operating_cash_flow: dashboardNumber(
+      row.operating_cash_flow ??
+      row.cash_flow_from_operations ??
+      row.net_cash_from_operating_activities
+    ),
+    capex: dashboardNumber(row.capex ?? row.capital_expenditure),
+
+    shares_outstanding: dashboardNumber(
+      row.shares_outstanding ?? row.period_end_shares_outstanding
+    ),
+    shares_outstanding_unit: row.shares_outstanding_unit ?? "crore shares",
+    source_pages: Array.isArray(row.source_pages) ? row.source_pages : [],
+    extraction_notes: row.extraction_notes ?? null
+  };
+}
+
+function normalizeGeminiDashboardPayload(raw = {}) {
+  let p = raw;
+
+  if (Array.isArray(p)) p = p[0] ?? {};
+  if (p.result && typeof p.result === "object") p = p.result;
+  if (p.data && typeof p.data === "object") p = p.data;
+
+  const c = p.company && typeof p.company === "object" ? p.company : {};
+  const companyName = c.name ?? c.legal_name ?? p.company_name ?? "Unknown company";
+
+  let rows = p.financials ?? p.financial_rows ?? p.financial_history ?? p.years ?? [];
+  if (!Array.isArray(rows) && rows && typeof rows === "object") rows = Object.values(rows);
+
+  const financials = (Array.isArray(rows) ? rows : [])
+    .map(row => dashboardRow(row, companyName))
+    .filter(row => row.year != null || row.financial_year)
+    .sort((a, b) => (a.year ?? 0) - (b.year ?? 0));
+
+  if (!financials.length) {
+    throw new Error("Gemini returned no dashboard-compatible financial-year rows.");
+  }
+
+  const core = [
+    "revenue", "ebitda", "operating_income", "net_income", "total_assets",
+    "current_assets", "current_liabilities", "total_debt", "cash",
+    "total_equity", "operating_cash_flow", "capex", "accounts_receivable"
+  ];
+
+  if (!financials.some(r => core.some(k => Number.isFinite(r[k])))) {
+    throw new Error("Gemini returned financial years but no safely usable financial values.");
+  }
+
+  return {
+    company: {
+      name: c.name ?? companyName,
+      legal_name: c.legal_name ?? companyName,
+      listing_status: c.listing_status ?? "unknown",
+      ticker: c.ticker ?? null,
+      exchange: c.exchange ?? null,
+      nse_code: c.nse_code ?? null,
+      bse_code: c.bse_code ?? null,
+      isin: c.isin ?? null,
+      currency: c.currency ?? "INR",
+      extraction_confidence:
+        c.extraction_confidence ?? p.extraction_confidence ?? p.confidence ?? "Gemini extracted"
+    },
+    financials,
+    validation: {
+      consolidated_preferred: true,
+      years_found: financials.map(r => r.financial_year).filter(Boolean),
+      warnings: Array.isArray(p.warnings) ? p.warnings : []
+    }
+  };
+}
+
+function financialExtractionPrompt(reportText, filename) {
+  return `
+You are FinSight's annual-report financial extraction engine.
+
+FILE: ${filename}
+
+Extract audited financial data for the dashboard.
+
+SOURCE PRIORITY:
+1. Audited CONSOLIDATED financial statements.
+2. Consolidated notes.
+3. Standalone only if consolidated statements genuinely do not exist.
+
+Never substitute financial highlights, investor-presentation KPIs,
+bookings, pre-sales, adjusted PAT or adjusted EBITDA for audited figures.
+
+STRICT RULES:
+- Never invent values.
+- Missing/unsupported values MUST be null, never zero.
+- Never mix consolidated and standalone figures.
+- Extract every reliably comparable financial year.
+- Monetary values MUST be normalized to INR CRORE.
+- Shares outstanding MUST be normalized to CRORE SHARES.
+- Preserve negative reported values.
+- revenue means revenue from operations/customer revenue, not total income.
+- operating_income means EBIT/operating profit, NOT EBITDA.
+- operating_cash_flow means net cash generated from operating activities.
+- capex should be a positive cash expenditure amount so OCF - capex works.
+- cash means cash/cash equivalents suitable for net-debt calculation.
+
+CONVERSIONS:
+INR crore => unchanged
+INR million => divide by 10
+INR lakh => divide by 100
+INR billion => multiply by 100
+
+Return VALID JSON ONLY:
+
+{
+  "company": {
+    "name": "",
+    "legal_name": "",
+    "listing_status": "listed|unlisted|unknown",
+    "ticker": null,
+    "exchange": null,
+    "nse_code": null,
+    "bse_code": null,
+    "isin": null,
+    "currency": "INR",
+    "extraction_confidence": "High|Medium|Low"
+  },
+  "financials": [
+    {
+      "company": "",
+      "financial_year": "2025-26",
+      "year": 2026,
+      "statement_basis": "Consolidated",
+      "source_unit": "INR crore",
+      "original_source_unit": "",
+      "revenue": null,
+      "total_income": null,
+      "other_income": null,
+      "revenue_basis": "reported revenue",
+      "ebitda": null,
+      "cogs": null,
+      "operating_income": null,
+      "net_income": null,
+      "finance_cost": null,
+      "total_assets": null,
+      "current_assets": null,
+      "current_liabilities": null,
+      "total_debt": null,
+      "cash": null,
+      "net_debt_cash": null,
+      "net_debt_cash_basis": null,
+      "total_equity": null,
+      "inventory": null,
+      "accounts_receivable": null,
+      "accounts_payable": null,
+      "operating_cash_flow": null,
+      "capex": null,
+      "shares_outstanding": null,
+      "shares_outstanding_unit": "crore shares",
+      "source_pages": [],
+      "extraction_notes": null
+    }
+  ],
+  "warnings": []
+}
+
+EBITDA: return only when explicitly reported or reliably derivable from disclosed components.
+EBIT: search EBIT, operating profit, profit before finance costs and tax, or a clearly equivalent audited line.
+DEBT: include interest-bearing current and non-current borrowings; exclude trade payables.
+RECEIVABLES: use trade/accounts receivables.
+YEAR: "2025-26" has year 2026.
+
+ANNUAL REPORT TEXT:
+${reportText}
+`;
+}
+
+async function extractFinancialsWithGemini(file) {
+  const pdfData = await extractPdfTextLocally(file);
+
+  const maxChars = Number(process.env.GEMINI_FINANCIAL_TEXT_LIMIT || 900000);
+  const reportText =
+    pdfData.text.length > maxChars ? pdfData.text.slice(0, maxChars) : pdfData.text;
+
+  console.log("Gemini financial extraction started:", {
+    file: file.originalname,
+    model: GEMINI_MODEL,
+    sizeMB: Number((file.size / 1024 / 1024).toFixed(2)),
+    extractedCharacters: pdfData.text.length,
+    sentCharacters: reportText.length
+  });
+
+  const responseText = await geminiGenerate(
+    [{ text: financialExtractionPrompt(reportText, file.originalname) }],
+    { json: true }
+  );
+
+  console.log("Gemini financial response received.");
+
+  const parsed = safeJSON(responseText);
+  if (!parsed) throw new Error("Gemini returned unreadable financial JSON.");
+
+  return {
+    ...normalizeGeminiDashboardPayload(parsed),
+    provider: "gemini",
+    model: GEMINI_MODEL,
+    pdf: {
+      pages: pdfData.pages,
+      extractedCharacters: pdfData.text.length,
+      sentCharacters: reportText.length
+    }
+  };
+}
 
 app.post(
   "/api/ai/extract-financials",
-
-  upload.single(
-    "report"
-  ),
-
-  async (
-    req,
-    res
-  ) => {
-
+  upload.single("report"),
+  async (req, res) => {
     try {
-
       if (!req.file) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Upload an annual-report PDF.",
-
-            code:
-              "REPORT_REQUIRED"
-
-          });
-
+        return res.status(400).json({
+          ok: false,
+          error: "Upload an annual-report PDF.",
+          code: "REPORT_REQUIRED"
+        });
       }
 
-
-      if (
-        req.file.mimetype &&
-        req.file.mimetype !==
-          "application/pdf"
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "FinSight requires an annual-report PDF.",
-
-            code:
-              "INVALID_REPORT"
-
-          });
-
+      if (req.file.mimetype && req.file.mimetype !== "application/pdf") {
+        return res.status(400).json({
+          ok: false,
+          error: "FinSight requires an annual-report PDF.",
+          code: "INVALID_REPORT"
+        });
       }
 
-
-      /* ------------------------------------------------------
-         LOCAL PDF PARSING
-         ------------------------------------------------------ */
-
-      const pdfData =
-        await extractPdfTextLocally(
-          req.file
-        );
-
-
-      /* ------------------------------------------------------
-         LOCAL FINANCIAL EXTRACTION
-         ------------------------------------------------------ */
-
-      const result =
-        extractFinancialsLocally(
-          pdfData
-        );
-
-
-      /* ------------------------------------------------------
-         SAVE REPORT
-         ------------------------------------------------------ */
-
-      let persisted =
-        null;
-
+      const result = await extractFinancialsWithGemini(req.file);
+      let persisted = null;
 
       if (pool) {
-
         try {
+          const companyRow = await upsertCompany({
+            name: result.company.legal_name || result.company.name || "Unknown company",
+            ticker: result.company.ticker,
+            exchange: result.company.exchange,
+            listingStatus: result.company.listing_status,
+            isin: result.company.isin
+          });
 
-          const companyRow =
-            await upsertCompany({
-
-              name:
-                result.company.legal_name ||
-                result.company.name ||
-                "Unknown company",
-
-              ticker:
-                null,
-
-              exchange:
-                null,
-
-              listingStatus:
-                "unknown",
-
-              isin:
-                null
-
-            });
-
-
-          const hash =
-            crypto
-              .createHash(
-                "sha256"
-              )
-              .update(
-                req.file.buffer
-              )
-              .digest(
-                "hex"
-              );
-
+          const hash = crypto
+            .createHash("sha256")
+            .update(req.file.buffer)
+            .digest("hex");
 
           const latestYear =
             result.financials
-              .map(
-                row =>
-                  Number(
-                    row.year
-                  )
-              )
-              .filter(
-                Number.isFinite
-              )
-              .sort(
-                (a, b) =>
-                  b - a
-              )[0]
-            || null;
+              .map(r => Number(r.year))
+              .filter(Number.isFinite)
+              .sort((a, b) => b - a)[0] || null;
 
-
-          const inserted =
-            await dbQuery(
-              `
-              INSERT INTO reports
-              (
-                company_id,
-                filename,
-                report_year,
-                metrics,
-                analysis,
-                source_hash
-              )
-
-              VALUES
-              (
-                $1,
-                $2,
-                $3,
-                $4,
-                $5,
-                $6
-              )
-
-              RETURNING
-                id,
-                created_at
-              `,
-              [
-
-                companyRow.id,
-
-                req.file.originalname,
-
-                latestYear,
-
-                {
-                  financials:
-                    result.financials,
-
-                  validation:
-                    result.validation
-                },
-
-                {},
-
-                hash
-
-              ]
-            );
-
+          const inserted = await dbQuery(
+            `INSERT INTO reports
+             (company_id, filename, report_year, metrics, analysis, source_hash)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             RETURNING id, created_at`,
+            [
+              companyRow.id,
+              req.file.originalname,
+              latestYear,
+              {
+                provider: "gemini",
+                model: GEMINI_MODEL,
+                financials: result.financials,
+                validation: result.validation
+              },
+              {},
+              hash
+            ]
+          );
 
           persisted = {
-
-            companyId:
-              companyRow.id,
-
-            reportId:
-              inserted.rows[0].id,
-
-            createdAt:
-              inserted.rows[0].created_at
-
+            companyId: companyRow.id,
+            reportId: inserted.rows[0].id,
+            createdAt: inserted.rows[0].created_at
           };
-
-        }
-
-        catch (databaseError) {
-
-          console.error(
-            "Could not save locally extracted report:",
-            databaseError
-          );
-
-
+        } catch (dbError) {
+          console.error("Extraction succeeded; database save failed:", dbError);
           result.validation.warnings.push(
-            "Financial extraction succeeded, but the result could not be saved to research memory."
+            "Extraction succeeded, but database persistence failed."
           );
-
         }
-
       }
 
+      const dashboardPayload = {
+        ok: true,
+        company: result.company,
+        financials: result.financials,
+        validation: result.validation,
+        persisted,
+        provider: "gemini",
+        model: result.model,
+        pdf: result.pdf
+      };
 
       console.log(
-        "Local financial extraction successful:",
-        result.company.name
+        "FINAL DASHBOARD PAYLOAD:",
+        JSON.stringify(dashboardPayload, null, 2)
       );
 
+      return res.json(dashboardPayload);
 
-      return res.json({
-
-        ok:
-          true,
-
-        ...result,
-
-        persisted,
-
-        provider:
-          "local",
-
-        model:
-          "pdf-parse + deterministic FinSight extractor",
-
-        pdf: {
-
-          pages:
-            pdfData.pages,
-
-          extractedCharacters:
-            pdfData.text.length
-
-        }
-
+    } catch (error) {
+      console.error("Gemini financial extraction error:", {
+        status: error?.status,
+        providerStatus: error?.providerStatus,
+        message: error?.message
       });
 
+      let status = Number(error?.status);
+      if (!Number.isInteger(status) || status < 400 || status > 599) status = 500;
+
+      return res.status(status).json({
+        ok: false,
+        error: error?.message || "Gemini financial extraction failed.",
+        code: status === 429 ? "GEMINI_QUOTA_EXCEEDED" : "GEMINI_EXTRACTION_FAILED",
+        provider: "gemini",
+        model: GEMINI_MODEL
+      });
     }
-
-    catch (error) {
-
-      console.error(
-        "Local financial extraction error:",
-        error
-      );
-
-
-      let status =
-        Number(
-          error?.status
-        );
-
-
-      if (
-        !Number.isInteger(status) ||
-        status < 400 ||
-        status > 599
-      ) {
-
-        status =
-          500;
-
-      }
-
-
-      return res
-        .status(status)
-        .json({
-
-          ok:
-            false,
-
-          error:
-            error?.message ||
-            "FinSight could not extract the annual report locally.",
-
-          code:
-
-            status === 413
-
-              ? "REPORT_TOO_LARGE"
-
-              : status === 400
-
-                ? "INVALID_REPORT"
-
-                : "LOCAL_EXTRACTION_FAILED"
-
-        });
-
-    }
-
   }
 );
-
 
 
 /* ============================================================
@@ -7211,11 +7270,11 @@ async function boot() {
 
 
       console.log(
-        "PDF financial extraction: LOCAL ONLY (pdf-parse + deterministic extractor, max 45 MB)"
+        "PDF text parsing: LOCAL; financial extraction: GEMINI"
       );
 
       console.log(
-        "Gemini scope: qualitative text analysis / Ask FinSight / valuation / prepared comparisons"
+        "Gemini scope: financial extraction + qualitative analysis"
       );
 
       console.log(
