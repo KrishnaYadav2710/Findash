@@ -3393,73 +3393,46 @@ function renderAskAnswer(
 }
 
 
-/* ============================================================
-   21. EVENT BINDING
-   ============================================================ */
+async function start() {
+  console.log("Starting FinSight...");
 
-function bindEvents() {
-  byId("loginForm")
-    ?.addEventListener(
-      "submit",
-      login
-    );
+  console.log(
+    `Gemini configured: ${Boolean(GEMINI_API_KEY)}`
+  );
 
-  byId("logoutButton")
-    ?.addEventListener(
-      "click",
-      logout
-    );
+  console.log(
+    `Gemini model: ${GEMINI_MODEL}`
+  );
 
-  byId("companyFile")
-    ?.addEventListener(
-      "change",
-      uploadReport
-    );
+  console.log(
+    `Database configured: ${databaseEnabled}`
+  );
 
-  byId("runAIAnalysis")
-    ?.addEventListener(
-      "click",
-      runAnnualReportAI
-    );
+  await initDatabase();
 
-  byId("askForm")
-    ?.addEventListener(
-      "submit",
-      askFinSight
-    );
-
-  window.addEventListener(
-    "resize",
+  app.listen(
+    PORT,
+    "0.0.0.0",
     () => {
-      if (
-        state.financials.length
-      ) {
-        renderPerformanceChart();
-      }
+      console.log("FinSight server started.");
+      console.log(`Port: ${PORT}`);
+      console.log("Financial extraction: enabled");
+
+      console.log(
+        "Usage logging: " +
+          (databaseEnabled
+            ? "PostgreSQL/Supabase"
+            : "disabled")
+      );
     }
   );
 }
 
-
-/* ============================================================
-   22. INITIALIZATION
-   ============================================================ */
-
-async function init() {
-  bindEvents();
-
-  await checkSession();
-}
-
-
-if (
-  document.readyState ===
-  "loading"
-) {
-  document.addEventListener(
-    "DOMContentLoaded",
-    init
+start().catch(error => {
+  console.error(
+    "FinSight startup failed:",
+    error
   );
-} else {
-  init();
-}
+
+  process.exit(1);
+});
