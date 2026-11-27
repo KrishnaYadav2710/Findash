@@ -1,19 +1,29 @@
-{
-  "name": "finsight-gemini-dashboard",
-  "version": "4.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "latest",
-    "dotenv": "latest",
-    "exceljs": "latest",
-    "express": "latest",
-    "multer": "latest",
-    "pdf-parse": "^1.1.1",
-    "pg": "latest"
-  }
-}
+services:
+  - type: web
+    name: finsight-ai
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+
+      - key: FINSIGHT_ACCESS_PASSWORD
+        sync: false
+
+      - key: FINSIGHT_ADMIN_PASSWORD
+        sync: false
+
+      - key: DATABASE_URL
+        sync: false
+
+      - key: DATABASE_SSL
+        value: "true"
+
+      - key: SESSION_SECRET
+        generateValue: true
