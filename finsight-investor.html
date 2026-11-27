@@ -2,11 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+
   <meta
     name="viewport"
-    content="width=device-width,initial-scale=1"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
   >
-  <title>FinSight AI</title>
+
+  <meta
+    name="theme-color"
+    content="#0b3d32"
+  >
+
+  <title>FinSight</title>
+
   <link
     rel="stylesheet"
     href="/finsight-investor.css"
@@ -14,8 +22,17 @@
 </head>
 
 <body>
-  <div id="loginGate" class="login-gate">
+
+  <!-- ======================================================
+       LOGIN
+       ====================================================== -->
+
+  <div
+    id="loginGate"
+    class="login-gate"
+  >
     <div class="login-card">
+
       <div class="brand">
         <strong>FinSight</strong>
         <span>INVESTOR INTELLIGENCE</span>
@@ -28,30 +45,38 @@
       </p>
 
       <form id="loginForm">
-        <label>
-          Name
+
+        <label class="form-field">
+          <span>Name</span>
+
           <input
             id="loginName"
+            name="name"
+            type="text"
             autocomplete="name"
+            maxlength="120"
             required
           >
         </label>
 
-        <label>
-          Access password
+        <label class="form-field">
+          <span>Access password</span>
+
           <input
             id="loginPassword"
+            name="password"
             type="password"
             autocomplete="current-password"
           >
         </label>
 
         <button
-          class="primary"
+          class="primary login-submit"
           type="submit"
         >
           Enter FinSight
         </button>
+
       </form>
 
       <div
@@ -60,28 +85,42 @@
         hidden
       ></div>
 
-      <small>
-        Your password is used only for access and is not stored
-        in the usage Excel file.
+      <small class="login-note">
+        Your access password is not stored in the usage log.
       </small>
+
     </div>
   </div>
+
+
+  <!-- ======================================================
+       APPLICATION
+       ====================================================== -->
 
   <div
     id="app"
     class="app-shell"
     hidden
   >
+
+    <!-- ====================================================
+         HEADER
+         ==================================================== -->
+
     <header class="topbar">
+
       <div class="brand">
         <strong>FinSight</strong>
         <span>REPORT DASHBOARD</span>
       </div>
 
       <div class="top-actions">
+
         <a
           class="secondary admin-download"
           href="/api/admin/usage.xlsx"
+          id="usageDownload"
+          hidden
         >
           Download usage Excel
         </a>
@@ -93,27 +132,46 @@
         >
           Logout
         </button>
+
       </div>
+
     </header>
 
+
+    <!-- ====================================================
+         MAIN
+         ==================================================== -->
+
     <main>
+
+      <!-- ==================================================
+           HERO / UPLOAD
+           ================================================== -->
+
       <section class="hero">
+
         <div class="hero-copy">
+
           <span class="eyebrow">
             ANNUAL REPORT → FINANCIAL DASHBOARD
           </span>
 
           <h1>
-            Upload. Extract. Understand.
+            Upload. Extract.<br>
+            Understand.
           </h1>
 
           <p>
             FinSight extracts audited annual-report financials
-            and calculates investor ratios locally.
+            and calculates investor metrics from the extracted
+            report data.
           </p>
+
         </div>
 
+
         <div class="report-upload-card">
+
           <input
             id="companyFile"
             type="file"
@@ -125,12 +183,14 @@
             class="file-button primary"
             for="companyFile"
           >
+            <span aria-hidden="true">↑</span>
             Choose annual-report PDF
           </label>
 
           <div
             id="uploadStatus"
             class="upload-status"
+            aria-live="polite"
           >
             No report loaded.
           </div>
@@ -140,51 +200,99 @@
             class="error-box"
             hidden
           ></div>
+
         </div>
+
       </section>
+
+
+      <!-- ==================================================
+           COMPANY WORKSPACE
+           ================================================== -->
 
       <div
         id="companyWorkspace"
+        class="company-workspace"
         hidden
       >
+
+        <!-- ================================================
+             COMPANY HEADER
+             ================================================ -->
+
         <section class="company-header">
+
           <div>
-            <span class="eyebrow">COMPANY</span>
 
-            <h2 id="companyName">—</h2>
+            <span class="eyebrow">
+              COMPANY
+            </span>
 
-            <div class="company-meta">
-              <span id="period">—</span>
-              <span>·</span>
-              <span id="statementBasis">—</span>
-              <span>·</span>
-              <span id="confidence">—</span>
-            </div>
+            <h2 id="companyName">
+              —
+            </h2>
+
+            <p id="companyMeta">
+              —
+            </p>
+
           </div>
+
         </section>
 
-        <section>
+
+        <!-- ================================================
+             YEAR CONTROLS
+             ================================================ -->
+
+        <section
+          id="yearControls"
+          class="year-controls"
+          hidden
+        ></section>
+
+
+        <!-- ================================================
+             LATEST SNAPSHOT
+             ================================================ -->
+
+        <section class="research-section">
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
                 LATEST SNAPSHOT
               </span>
 
               <h3 id="snapshotTitle">
-                Latest reporting year
+                Latest financial snapshot
               </h3>
+
             </div>
+
           </div>
+
 
           <div
             id="metrics"
-            class="metric-grid"
+            class="metrics-grid"
           ></div>
+
         </section>
 
+
+        <!-- ================================================
+             FINANCIAL HISTORY
+             ================================================ -->
+
         <section class="research-section">
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
                 FINANCIAL HISTORY
               </span>
@@ -192,20 +300,41 @@
               <h3>
                 Year-by-year company performance
               </h3>
+
             </div>
+
           </div>
+
 
           <div class="table-shell">
+
             <table class="financial-table">
-              <thead id="financialHistoryHead"></thead>
+
+              <thead>
+                <tr id="financialHistoryHead">
+                  <th>Metric</th>
+                </tr>
+              </thead>
+
               <tbody id="financialHistoryBody"></tbody>
+
             </table>
+
           </div>
+
         </section>
 
+
+        <!-- ================================================
+             MULTI-YEAR PERFORMANCE
+             ================================================ -->
+
         <section class="research-section">
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
                 MULTI-YEAR PERFORMANCE
               </span>
@@ -213,65 +342,82 @@
               <h3>
                 Revenue, EBITDA and net profit
               </h3>
+
             </div>
+
           </div>
 
-          <div
-            id="chart"
-            class="chart"
-          ></div>
 
-          <div class="chart-legend">
-            <span>
-              <i class="legend-revenue"></i>
-              Revenue
-            </span>
+          <div class="chart-shell">
 
-            <span>
-              <i class="legend-ebitda"></i>
-              EBITDA
-            </span>
+            <canvas
+              id="performanceChart"
+              aria-label="Revenue EBITDA and net profit chart"
+            ></canvas>
 
-            <span>
-              <i class="legend-profit"></i>
-              Net profit
-            </span>
           </div>
+
         </section>
 
-        <section class="score-layout research-section">
+
+        <!-- ================================================
+             FINANCIAL HEALTH
+             ================================================ -->
+
+        <section class="research-section score-layout">
+
           <div class="score-card">
+
             <div
-              id="ring"
+              id="scoreRing"
               class="score-ring"
             >
-              <strong id="score">—</strong>
+              <strong id="scoreValue">
+                —
+              </strong>
+
               <span>/100</span>
             </div>
 
-            <div>
-              <span class="eyebrow">
-                FINSIGHT FINANCIAL HEALTH
-              </span>
-
-              <h3 id="scoreLabel">—</h3>
-
-              <p id="scoreCopy">
-                This is a heuristic, not a company-reported
-                metric, credit rating, or investment advice.
-              </p>
-            </div>
           </div>
 
-          <div
-            id="scoreBars"
-            class="score-bars"
-          ></div>
+
+          <div class="score-content">
+
+            <span class="eyebrow">
+              FINSIGHT FINANCIAL HEALTH
+            </span>
+
+            <h3 id="scoreLabel">
+              —
+            </h3>
+
+            <p id="scoreCopy">
+              This is a heuristic financial-health assessment,
+              not a company-reported metric, credit rating,
+              or investment recommendation.
+            </p>
+
+            <div
+              id="scoreBars"
+              class="score-bars"
+            ></div>
+
+          </div>
+
         </section>
 
+
+        <!-- ================================================
+             INVESTOR SIGNALS
+             ================================================ -->
+
         <section class="research-section">
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
                 INVESTOR SIGNALS
               </span>
@@ -279,30 +425,55 @@
               <h3>
                 Good, bad and watch
               </h3>
+
             </div>
+
           </div>
+
 
           <div class="signal-grid">
+
             <article class="signal-column good">
+
               <h4>GOOD</h4>
+
               <div id="goodList"></div>
+
             </article>
+
 
             <article class="signal-column bad">
+
               <h4>BAD</h4>
+
               <div id="badList"></div>
+
             </article>
+
 
             <article class="signal-column watch">
+
               <h4>WATCH</h4>
+
               <div id="watchList"></div>
+
             </article>
+
           </div>
+
         </section>
 
+
+        <!-- ================================================
+             DEEP RESEARCH
+             ================================================ -->
+
         <section class="research-section">
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
                 DEEP RESEARCH
               </span>
@@ -310,51 +481,193 @@
               <h3>
                 Company fundamentals
               </h3>
+
             </div>
+
           </div>
+
 
           <div
             id="sectionTabs"
             class="tabs"
           ></div>
 
+
           <div
             id="sectionPanel"
             class="section-panel"
           ></div>
+
         </section>
 
-        <section class="research-section">
+
+        <!-- ================================================
+             ANNUAL REPORT AI
+             ================================================ -->
+
+        <section
+          id="annualReportAISection"
+          class="research-section ai-section"
+        >
+
           <div class="section-heading">
+
             <div>
+
               <span class="eyebrow">
-                FORMULAS
+                FINSIGHT AI
               </span>
 
               <h3>
-                How FinSight calculates the dashboard
+                Annual-report intelligence
               </h3>
+
             </div>
+
+            <span class="evidence-badge">
+              EVIDENCE GROUNDED
+            </span>
+
           </div>
 
+
+          <p class="section-intro">
+            Analyze management commentary, risks, auditor
+            observations, governance, capital allocation and
+            other qualitative evidence contained in the uploaded
+            annual report.
+          </p>
+
+
+          <div class="ai-actions">
+
+            <button
+              id="runAIAnalysis"
+              class="primary"
+              type="button"
+            >
+              Run AI analysis
+            </button>
+
+          </div>
+
+
           <div
-            id="formulaCards"
-            class="panel-grid"
+            id="aiAnalysisStatus"
+            class="status-message"
+            aria-live="polite"
           ></div>
+
+
+          <div
+            id="aiAnalysisResult"
+            class="ai-result"
+            hidden
+          ></div>
+
         </section>
+
+
+        <!-- ================================================
+             ASK FINSIGHT
+             ================================================ -->
+
+        <section
+          id="askFinSightSection"
+          class="research-section ai-section"
+        >
+
+          <div class="section-heading">
+
+            <div>
+
+              <span class="eyebrow">
+                ASK FINSIGHT
+              </span>
+
+              <h3>
+                Ask about the annual report
+              </h3>
+
+            </div>
+
+          </div>
+
+
+          <p class="section-intro">
+            Ask questions using the financial data and report
+            evidence already extracted for this company.
+          </p>
+
+
+          <form
+            id="askForm"
+            class="ask-form"
+          >
+
+            <textarea
+              id="askQuestion"
+              rows="4"
+              placeholder="Example: How has cash generation changed across the reporting years?"
+              required
+            ></textarea>
+
+            <button
+              id="askButton"
+              class="primary"
+              type="submit"
+            >
+              Ask FinSight
+            </button>
+
+          </form>
+
+
+          <div
+            id="askStatus"
+            class="status-message"
+            aria-live="polite"
+          ></div>
+
+
+          <div
+            id="askResult"
+            class="ai-result"
+            hidden
+          ></div>
+
+        </section>
+
       </div>
+
     </main>
 
-    <footer>
-      <strong>FinSight</strong>
+
+    <!-- ====================================================
+         FOOTER
+         ==================================================== -->
+
+    <footer class="site-footer">
+
+      <strong>
+        FinSight
+      </strong>
 
       <span>
-        Annual-report financial extraction. Missing values
-        remain N/A when the report does not reliably support them.
+        Annual-report financial extraction. Missing values remain
+        N/A when the report does not reliably support them.
       </span>
+
     </footer>
+
   </div>
 
+
+  <!-- ======================================================
+       JAVASCRIPT
+       ====================================================== -->
+
   <script src="/finsight-investor.js"></script>
+
 </body>
 </html>
