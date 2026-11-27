@@ -2555,5 +2555,1011 @@ Return valid JSON only:
     }
   }
 );
+/* ============================================================
+   17. GEMINI FINANCIAL EXTRACTION
+   ============================================================ */
 
+app.post(
+  "/api/ai/extract-financials",
+  upload.single("report"),
+  async (req, res) => {
+
+    const filename =
+      req.file?.originalname ||
+      "unknown.pdf";
+
+    try {
+
+      /* --------------------------------------------------------
+         VALIDATE FILE
+         -------------------------------------------------------- */
+
+      if (!req.file) {
+
+        return res.status(400).json({
+          ok: false,
+          error: "Upload an annual-report PDF."
+        });
+
+      }
+
+
+      const isPdf =
+
+        req.file.mimetype === "application/pdf" ||
+
+        /\.pdf$/i.test(
+          filename
+        );
+
+
+      if (!isPdf) {
+
+        return res.status(400).json({
+          ok: false,
+          error: "Please upload a valid PDF annual report."
+        });
+
+      }
+
+
+      await recordUsage(
+        req,
+        "financial_extraction_started",
+        {
+          filename,
+          status: "started",
+          model: GEMINI_MODEL
+        }
+      );
+
+
+      /* --------------------------------------------------------
+         EXTRACT PDF TEXT LOCALLY
+         -------------------------------------------------------- */
+
+      const pdfData =
+        await extractPdfTextLocally(
+          req.file
+        );
+
+
+      /*
+       * Large annual reports can exceed practical
+       * Gemini context limits.
+       *
+       * Keep a large but bounded amount of report text.
+       */
+
+      const MAX_REPORT_CHARACTERS =
+        900000;
+
+
+      const reportText =
+
+        pdfData.text.length >
+        MAX_REPORT_CHARACTERS
+
+          ? pdfData.text.slice(
+              0,
+              MAX_REPORT_CHARACTERS
+            )
+
+          : pdfData.text;
+
+
+      console.log(
+        `Sending ${reportText.length.toLocaleString()} characters to Gemini for financial extraction.`
+      );
+
+
+      /* --------------------------------------------------------
+         EXTRACTION PROMPT
+         -------------------------------------------------------- */
+
+      const prompt = `
+You are FinSight AI's financial-statement extraction engine.
+
+Your job is to extract structured financial information from the supplied annual report.
+
+IMPORTANT RULES:
+
+1. Use ONLY information contained in the annual report.
+
+2. NEVER invent a number.
+
+3. If a value cannot be reliably identified, return null.
+
+4. Prefer AUDITED CONSOLIDATED financial statements.
+
+5. Do NOT mix standalone and consolidated figures.
+
+6. Extract every financial year that can be reliably identified.
+
+7. Keep values for the same financial year on the same accounting basis.
+
+8. Revenue means operating/customer revenue or revenue from operations.
+
+9. Do NOT substitute total income for revenue.
+
+10. Operating income means EBIT / operating profit where reliably available.
+
+11. EBITDA should only be returned when reported or reliably derivable from disclosed financial information.
+
+12. Net income means profit after tax / profit for the year attributable to the relevant consolidated entity.
+
+13. Cash should represent cash and cash equivalents unless the report explicitly identifies another amount appropriate for net-debt calculations.
+
+14. Total debt should include interest-bearing borrowings.
+
+15. Operating cash flow means net cash generated from operating activities.
+
+16. Capex should represent purchases/additions of property, plant, equipment and relevant capital assets where reliably identifiable.
+
+17. Do not treat all investing cash flows as capex.
+
+18. Preserve negative numbers.
+
+19. Financial values must include their source unit.
+
+20. Shares outstanding must include the unit.
+
+21. Do not calculate financial ratios. The FinSight frontend calculates ratios.
+
+22. Return STRICT VALID JSON ONLY.
+
+23. Do not wrap the JSON in Markdown.
+
+24. Do not add commentary before or after JSON.
+
+
+ANNUAL REPORT TEXT:
+
+${reportText}
+
+
+RETURN EXACTLY THIS GENERAL STRUCTURE:
+
+{
+  "company": {
+    "name": null,
+    "legal_name": null,
+    "listing_status": "listed|unlisted|pre-ipo|unknown",
+    "ticker": null,
+    "exchange": null,
+    "nse_code": null,
+    "bse_code": null,
+    "isin": null,
+    "currency": "INR",
+    "extraction_confidence": "High|Medium|Low"
+  },
+
+  "financials": [
+    {
+      "company": null,
+
+      "financial_year": null,
+
+      "year": null,
+
+      "statement_basis": "Consolidated",
+
+      "source_unit": "INR crore",
+
+      "revenue": null,
+
+      "total_income": null,
+
+      "other_income": null,
+
+      "ebitda": null,
+
+      "cogs": null,
+
+      "operating_income": null,
+
+      "net_income": null,
+
+      "finance_cost": null,
+
+      "total_assets": null,
+
+      "current_assets": null,
+
+      "current_liabilities": null,
+
+      "total_debt": null,
+
+      "cash": null,
+
+      "net_debt_cash": null,
+
+      "total_equity": null,
+
+      "inventory": null,
+
+      "accounts_receivable": null,
+
+      "accounts_payable": null,
+
+      "operating_cash_flow": null,
+
+      "capex": null,
+
+      "shares_outstanding": null,
+
+      "shares_outstanding_unit": null,
+
+      "source_pages": [],
+
+      "extraction_notes": null
+    }
+  ],
+
+  "warnings": []
+}
+
+
+UNIT RULES:
+
+If the report uses:
+
+₹ crore
+INR crore
+Rs crore
+
+use:
+
+"source_unit": "INR crore"
+
+
+If it uses INR million, use:
+
+"source_unit": "INR million"
+
+
+If it uses INR billion, use:
+
+"source_unit": "INR billion"
+
+
+Do NOT convert the values yourself unless absolutely necessary.
+The server normalization layer will convert them.
+
+
+FINANCIAL YEAR RULE:
+
+For FY 2024-25:
+
+"financial_year": "FY2024-25"
+
+"year": 2025
+
+
+For FY 2023-24:
+
+"financial_year": "FY2023-24"
+
+"year": 2024
+
+
+STATEMENT BASIS:
+
+Prefer:
+
+"Consolidated"
+
+Only use standalone values if consolidated values genuinely do not exist.
+
+Never silently combine them.
+
+
+OPERATING PROFIT:
+
+Look for terms such as:
+
+Operating profit
+Profit from operations
+EBIT
+Earnings before interest and tax
+
+Do NOT automatically use EBITDA as EBIT.
+
+
+REVENUE:
+
+Look for:
+
+Revenue from operations
+Revenue
+Revenue from contracts with customers
+Sales
+
+Do NOT use total income as revenue.
+
+
+NET PROFIT:
+
+Look for:
+
+Profit after tax
+Profit for the year
+Net profit
+PAT
+
+
+DEBT:
+
+Look for interest-bearing:
+
+Borrowings
+Current borrowings
+Non-current borrowings
+Lease liabilities where appropriate
+
+Avoid treating trade payables as debt.
+
+
+CASH:
+
+Look for:
+
+Cash and cash equivalents
+Cash balances
+Bank balances when clearly cash-equivalent
+
+
+OPERATING CASH FLOW:
+
+Use:
+
+Net cash generated from operating activities
+Net cash from operating activities
+
+
+CAPEX:
+
+Look for:
+
+Purchase of property plant and equipment
+Purchase of fixed assets
+Additions to PPE
+Capital expenditure
+
+
+RECEIVABLES:
+
+Prefer:
+
+Trade receivables
+
+
+PAYABLES:
+
+Prefer:
+
+Trade payables
+
+
+SHARES:
+
+Extract period-end shares outstanding if reliably available.
+
+Return the actual unit, for example:
+
+"crore shares"
+
+"million shares"
+
+"lakh shares"
+
+"shares"
+
+
+QUALITY CHECK BEFORE RETURNING JSON:
+
+Check that:
+
+- years are not duplicated
+- consolidated is preferred
+- revenue is not total income
+- assets and liabilities are not accidentally swapped
+- cash is not total investments
+- debt is not total liabilities
+- operating cash flow is not total cash-flow movement
+- capex is not total investing cash flow
+- shares have a unit
+- missing values are null
+
+Return JSON only.
+`;
+
+
+      /* --------------------------------------------------------
+         CALL GEMINI
+         -------------------------------------------------------- */
+
+      const responseText =
+        await geminiGenerate(
+          [
+            {
+              text: prompt
+            }
+          ],
+          {
+            json: true
+          }
+        );
+
+
+      console.log(
+        "Gemini financial extraction response received."
+      );
+
+
+      /* --------------------------------------------------------
+         PARSE GEMINI JSON
+         -------------------------------------------------------- */
+
+      const rawExtraction =
+        safeJSON(
+          responseText
+        );
+
+
+      if (!rawExtraction) {
+
+        throw new Error(
+          "Gemini returned financial information, but the response was not valid JSON."
+        );
+
+      }
+
+
+      /*
+       * Convert Gemini's response into the exact
+       * structure expected by finsight-investor.js.
+       */
+
+      const normalized =
+        normalizeGeminiDashboardPayload(
+          rawExtraction
+        );
+
+
+      if (
+        !Array.isArray(
+          normalized.financials
+        ) ||
+        !normalized.financials.length
+      ) {
+
+        throw new Error(
+          "Gemini did not return any usable financial years."
+        );
+
+      }
+
+
+      /* --------------------------------------------------------
+         EXTRACTION QUALITY CHECK
+         -------------------------------------------------------- */
+
+      const usableRows =
+
+        normalized.financials.filter(
+          row => {
+
+            const fields = [
+
+              row.revenue,
+              row.total_income,
+              row.ebitda,
+              row.operating_income,
+              row.net_income,
+              row.total_assets,
+              row.total_equity,
+              row.operating_cash_flow
+
+            ];
+
+
+            return fields.some(
+              value =>
+                value !== null &&
+                value !== undefined
+            );
+
+          }
+        );
+
+
+      if (!usableRows.length) {
+
+        throw new Error(
+          "Gemini identified reporting years but did not extract usable financial statement values."
+        );
+
+      }
+
+
+      normalized.financials =
+        usableRows;
+
+
+      const latest =
+        usableRows.at(-1);
+
+
+      const companyName =
+
+        normalized.company?.name ||
+
+        latest?.company ||
+
+        "Unknown company";
+
+
+      /* --------------------------------------------------------
+         DATABASE REPORT STORAGE
+         -------------------------------------------------------- */
+
+      if (pool) {
+
+        try {
+
+          const company =
+            await upsertCompany({
+
+              name:
+                companyName,
+
+              ticker:
+                normalized.company?.ticker,
+
+              exchange:
+                normalized.company?.exchange,
+
+              listingStatus:
+                normalized.company?.listing_status,
+
+              isin:
+                normalized.company?.isin
+
+            });
+
+
+          const sourceHash =
+
+            crypto
+              .createHash("sha256")
+              .update(req.file.buffer)
+              .digest("hex");
+
+
+          await dbQuery(
+            `
+            INSERT INTO reports
+            (
+              company_id,
+              filename,
+              report_year,
+              metrics,
+              analysis,
+              source_hash
+            )
+
+            VALUES
+            (
+              $1,
+              $2,
+              $3,
+              $4::jsonb,
+              $5::jsonb,
+              $6
+            )
+            `,
+            [
+
+              company.id,
+
+              filename,
+
+              latest?.year || null,
+
+              JSON.stringify(
+                normalized.financials
+              ),
+
+              JSON.stringify({
+                provider:
+                  "gemini",
+
+                model:
+                  GEMINI_MODEL,
+
+                pages:
+                  pdfData.pages,
+
+                validation:
+                  normalized.validation
+              }),
+
+              sourceHash
+
+            ]
+          );
+
+        }
+
+        catch (
+          databaseError
+        ) {
+
+          /*
+           * Database failure must NOT prevent
+           * the dashboard from receiving extraction.
+           */
+
+          console.error(
+            "Report database persistence warning:",
+            databaseError
+          );
+
+        }
+
+      }
+
+
+      /* --------------------------------------------------------
+         RECORD SUCCESSFUL USAGE
+         -------------------------------------------------------- */
+
+      await recordUsage(
+        req,
+        "financial_extraction",
+        {
+
+          filename,
+
+          company:
+            companyName,
+
+          reportYear:
+            latest?.year ||
+            null,
+
+          status:
+            "success",
+
+          model:
+            GEMINI_MODEL
+
+        }
+      );
+
+
+      console.log(
+        "FinSight extraction successful:",
+        {
+          company:
+            companyName,
+
+          years:
+            normalized.financials.map(
+              row =>
+                row.financial_year
+            )
+        }
+      );
+
+
+      /* --------------------------------------------------------
+         IMPORTANT:
+         RETURN EXACT FORMAT EXPECTED BY DASHBOARD
+         -------------------------------------------------------- */
+
+      return res.json({
+
+        ok:
+          true,
+
+        company:
+          normalized.company,
+
+        financials:
+          normalized.financials,
+
+        validation:
+          normalized.validation,
+
+        provider:
+          "gemini",
+
+        model:
+          GEMINI_MODEL,
+
+        pdfProcessing:
+          "local",
+
+        pages:
+          pdfData.pages
+
+      });
+
+    }
+
+    catch (
+      error
+    ) {
+
+      console.error(
+        "Financial extraction failed:",
+        error
+      );
+
+
+      await recordUsage(
+        req,
+        "financial_extraction",
+        {
+
+          filename,
+
+          status:
+            "failed",
+
+          model:
+            GEMINI_MODEL,
+
+          error:
+            error?.message ||
+            "Unknown extraction error"
+
+        }
+      );
+
+
+      const status =
+
+        Number(error?.status) >= 400
+
+          ? Number(
+              error.status
+            )
+
+          : 500;
+
+
+      let message =
+        error?.message ||
+        "Annual-report financial extraction failed.";
+
+
+      if (
+        status === 429
+      ) {
+
+        message =
+          "Gemini quota has been reached. Wait briefly and try the report again.";
+
+      }
+
+
+      if (
+        status === 503
+      ) {
+
+        message =
+          error?.message ||
+          "Gemini is temporarily unavailable.";
+
+      }
+
+
+      return res
+        .status(status)
+        .json({
+
+          ok:
+            false,
+
+          error:
+            message
+
+        });
+
+    }
+
+  }
+);
+
+
+/* ============================================================
+   18. GLOBAL ERROR HANDLER
+   ============================================================ */
+
+app.use(
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
+
+    console.error(
+      "FinSight server error:",
+      error
+    );
+
+
+    /*
+     * Multer upload size error.
+     */
+
+    if (
+      error?.code ===
+      "LIMIT_FILE_SIZE"
+    ) {
+
+      return res
+        .status(413)
+        .json({
+
+          ok:
+            false,
+
+          error:
+            "The PDF is too large. Maximum upload size is 45 MB."
+
+        });
+
+    }
+
+
+    if (
+      res.headersSent
+    ) {
+
+      return next(
+        error
+      );
+
+    }
+
+
+    return res
+      .status(
+        Number(
+          error?.status
+        ) || 500
+      )
+      .json({
+
+        ok:
+          false,
+
+        error:
+          error?.message ||
+          "Unexpected server error."
+
+      });
+
+  }
+);
+
+
+/* ============================================================
+   19. START SERVER
+   ============================================================ */
+
+async function startServer() {
+
+  try {
+
+    /*
+     * Initialize PostgreSQL / Supabase tables.
+     */
+
+    if (pool) {
+
+      try {
+
+        await initDatabase();
+
+        await ensureResearchTables();
+
+      }
+
+      catch (
+        databaseError
+      ) {
+
+        /*
+         * The application should still start even
+         * if Supabase is temporarily unavailable.
+         */
+
+        console.error(
+          "Database initialization warning:",
+          databaseError
+        );
+
+      }
+
+    }
+
+
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+
+        console.log(
+          "============================================"
+        );
+
+        console.log(
+          "FinSight AI server started"
+        );
+
+        console.log(
+          `Port: ${PORT}`
+        );
+
+        console.log(
+          `Gemini configured: ${Boolean(
+            GEMINI_API_KEY
+          )}`
+        );
+
+        console.log(
+          `Gemini model: ${GEMINI_MODEL}`
+        );
+
+        console.log(
+          `Database configured: ${Boolean(
+            pool
+          )}`
+        );
+
+        console.log(
+          "Financial extraction: enabled"
+        );
+
+        console.log(
+          "Dashboard API: enabled"
+        );
+
+        console.log(
+          "Usage logging: enabled"
+        );
+
+        console.log(
+          "============================================"
+        );
+
+      }
+    );
+
+  }
+
+  catch (
+    error
+  ) {
+
+    console.error(
+      "FinSight startup failed:",
+      error
+    );
+
+
+    process.exit(1);
+
+  }
+
+}
+
+
+startServer();
 
