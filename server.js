@@ -1,4 +1,4 @@
- /* ============================================================
+/* ============================================================
    FINSIGHT AI — SERVER
    Report-first investor research backend
 
@@ -76,8 +76,6 @@ const GEMINI_API_KEY =
   "";
 
 
-
-
 const ALPHA_VANTAGE_API_KEY =
   process.env.ALPHA_VANTAGE_API_KEY ||
   "";
@@ -93,7 +91,10 @@ const FINSIGHT_PASSWORD =
   process.env.FINSIGHT_ACCESS_PASSWORD ||
   "";
 
-const FINSIGHT_ADMIN_PASSWORD = process.env.FINSIGHT_ADMIN_PASSWORD || "";
+const FINSIGHT_ADMIN_PASSWORD =
+  process.env.FINSIGHT_ADMIN_PASSWORD ||
+  "";
+
 const sessions = new Map();
 
 
@@ -829,6 +830,7 @@ async function upsertCompany({
         listingStatus,
 
         isin
+
       ]
     );
 
@@ -889,7 +891,18 @@ function basicAuth(
   next
 ) {
 
-  if (["/healthz", "/api/health", "/api/session", "/api/login", "/api/logout"].includes(req.path)) {
+  if (
+    [
+      "/healthz",
+      "/api/health",
+      "/api/session",
+      "/api/login",
+      "/api/logout"
+    ].includes(req.path) ||
+    /\.(css|js|png|jpg|jpeg|svg|ico|woff2?)$/i.test(
+      req.path
+    )
+  ) {
 
     return next();
 
@@ -1037,75 +1050,288 @@ app.get(
 );
 
 function requestUser(req) {
-  const token = String(req.headers.cookie || "").match(/finsight_session=([^;]+)/)?.[1];
-  return token ? sessions.get(token) || null : null;
+  const token = String(
+    req.headers.cookie || ""
+  ).match(
+    /finsight_session=([^;]+)/
+  )?.[1];
+
+  return token
+    ? sessions.get(token) || null
+    : null;
 }
 
-async function recordUsage(req, eventType, details = {}) {
-  const user = requestUser(req)?.name || "anonymous";
+async function recordUsage(
+  req,
+  eventType,
+  details = {}
+) {
+  const user =
+    requestUser(req)?.name ||
+    "anonymous";
+
   if (!pool) return;
+
   try {
     await dbQuery(
-      `INSERT INTO usage_events
-       (event_id, username, event_type, filename, company, report_year, status, gemini_model, error_message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [crypto.randomUUID(), user, eventType, details.filename || null, details.company || null,
-       details.reportYear || null, details.status || null, details.model || GEMINI_MODEL, details.error || null]
+      `
+      INSERT INTO usage_events
+      (
+        event_id,
+        username,
+        event_type,
+        filename,
+        company,
+        report_year,
+        status,
+        gemini_model,
+        error_message
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `,
+      [
+        crypto.randomUUID(),
+        user,
+        eventType,
+        details.filename || null,
+        details.company || null,
+        details.reportYear || null,
+        details.status || null,
+        details.model || GEMINI_MODEL,
+        details.error || null
+      ]
     );
   } catch (error) {
-    console.error("Usage event persistence failed:", error.message);
+    console.error(
+      "Usage event persistence failed:",
+      error.message
+    );
   }
 }
 
-app.get("/api/session", (req, res) => {
-  const user = requestUser(req);
-  return user ? res.json({ ok: true, name: user.name, admin: user.admin }) : res.json({ ok: false });
-});
+app.get(
+  "/api/session",
+  (req, res) => {
+    const user = requestUser(req);
 
-app.post("/api/login", async (req, res) => {
-  const name = String(req.body?.name || "").trim().slice(0, 120);
-  const password = String(req.body?.password || "");
-  if (!name) return res.status(400).json({ ok: false, error: "Enter your name." });
-  if (FINSIGHT_PASSWORD && password !== FINSIGHT_PASSWORD) return res.status(401).json({ ok: false, error: "Invalid access password." });
-  const token = crypto.randomBytes(32).toString("hex");
-  const admin = Boolean(FINSIGHT_ADMIN_PASSWORD && password === FINSIGHT_ADMIN_PASSWORD);
-  sessions.set(token, { name, admin, createdAt: Date.now() });
-  res.setHeader("Set-Cookie", `finsight_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`);
-  await recordUsage({ headers: { cookie: `finsight_session=${token}` } }, "login");
-  return res.json({ ok: true, name, admin });
-});
-
-app.post("/api/logout", async (req, res) => {
-  await recordUsage(req, "logout");
-  const token = String(req.headers.cookie || "").match(/finsight_session=([^;]+)/)?.[1];
-  if (token) sessions.delete(token);
-  res.setHeader("Set-Cookie", "finsight_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
-  return res.json({ ok: true });
-});
-
-app.get("/api/admin/usage.xlsx", async (req, res) => {
-  const user = requestUser(req);
-  if (!user?.admin) return res.status(403).json({ ok: false, error: "Administrator access required." });
-  if (!pool) return res.status(503).json({ ok: false, error: "Usage history database is not configured." });
-  try {
-    const result = await dbQuery("SELECT event_id, username, event_type, filename, company, report_year, status, gemini_model, created_at, error_message FROM usage_events ORDER BY created_at ASC");
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Usage Log");
-    sheet.columns = ["Event ID", "User", "Event Type", "File Name", "Company", "Report Year", "Status", "Gemini Model", "Date", "Time", "Error"].map(header => ({ header, key: header }));
-    result.rows.forEach(row => {
-      const date = row.created_at ? new Date(row.created_at) : null;
-      sheet.addRow({ "Event ID": row.event_id, "User": row.username, "Event Type": row.event_type, "File Name": row.filename, Company: row.company, "Report Year": row.report_year, Status: row.status, "Gemini Model": row.gemini_model, Date: date?.toISOString().slice(0, 10), Time: date?.toISOString().slice(11, 19), Error: row.error_message });
-    });
-    sheet.getRow(1).font = { bold: true };
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", "attachment; filename= finsight-usage.xlsx".replace("= ", "="));
-    await workbook.xlsx.write(res);
-    return res.end();
-  } catch (error) {
-    console.error("Usage export failed:", error.message);
-    return res.status(500).json({ ok: false, error: "Usage history could not be exported." });
+    return user
+      ? res.json({
+          ok: true,
+          name: user.name,
+          admin: user.admin
+        })
+      : res.json({
+          ok: false
+        });
   }
-});
+);
+
+app.post(
+  "/api/login",
+  async (req, res) => {
+    const name = String(
+      req.body?.name || ""
+    )
+      .trim()
+      .slice(0, 120);
+
+    const password = String(
+      req.body?.password || ""
+    );
+
+    if (!name) {
+      return res.status(400).json({
+        ok: false,
+        error: "Enter your name."
+      });
+    }
+
+    if (
+      FINSIGHT_PASSWORD &&
+      password !== FINSIGHT_PASSWORD
+    ) {
+      return res.status(401).json({
+        ok: false,
+        error: "Invalid access password."
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString(
+      "hex"
+    );
+
+    const admin = Boolean(
+      FINSIGHT_ADMIN_PASSWORD &&
+      password === FINSIGHT_ADMIN_PASSWORD
+    );
+
+    sessions.set(token, {
+      name,
+      admin,
+      createdAt: Date.now()
+    });
+
+    res.setHeader(
+      "Set-Cookie",
+      `finsight_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`
+    );
+
+    await recordUsage(
+      {
+        headers: {
+          cookie: `finsight_session=${token}`
+        }
+      },
+      "login"
+    );
+
+    return res.json({
+      ok: true,
+      name,
+      admin
+    });
+  }
+);
+
+app.post(
+  "/api/logout",
+  async (req, res) => {
+    await recordUsage(
+      req,
+      "logout"
+    );
+
+    const token = String(
+      req.headers.cookie || ""
+    ).match(
+      /finsight_session=([^;]+)/
+    )?.[1];
+
+    if (token) {
+      sessions.delete(token);
+    }
+
+    res.setHeader(
+      "Set-Cookie",
+      "finsight_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+    );
+
+    return res.json({
+      ok: true
+    });
+  }
+);
+
+app.get(
+  "/api/admin/usage.xlsx",
+  async (req, res) => {
+    const user = requestUser(req);
+
+    if (!user?.admin) {
+      return res.status(403).json({
+        ok: false,
+        error: "Administrator access required."
+      });
+    }
+
+    if (!pool) {
+      return res.status(503).json({
+        ok: false,
+        error:
+          "Usage history database is not configured."
+      });
+    }
+
+    try {
+      const result = await dbQuery(`
+        SELECT
+          event_id,
+          username,
+          event_type,
+          filename,
+          company,
+          report_year,
+          status,
+          gemini_model,
+          created_at,
+          error_message
+        FROM usage_events
+        ORDER BY created_at ASC
+      `);
+
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet(
+        "Usage Log"
+      );
+
+      sheet.columns = [
+        "Event ID",
+        "User",
+        "Event Type",
+        "File Name",
+        "Company",
+        "Report Year",
+        "Status",
+        "Gemini Model",
+        "Date",
+        "Time",
+        "Error"
+      ].map(header => ({
+        header,
+        key: header
+      }));
+
+      result.rows.forEach(row => {
+        const date = row.created_at
+          ? new Date(row.created_at)
+          : null;
+
+        sheet.addRow({
+          "Event ID": row.event_id,
+          "User": row.username,
+          "Event Type": row.event_type,
+          "File Name": row.filename,
+          Company: row.company,
+          "Report Year": row.report_year,
+          Status: row.status,
+          "Gemini Model": row.gemini_model,
+          Date: date?.toISOString().slice(0, 10),
+          Time: date?.toISOString().slice(11, 19),
+          Error: row.error_message
+        });
+      });
+
+      sheet.getRow(1).font = {
+        bold: true
+      };
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=finsight-usage.xlsx"
+      );
+
+      await workbook.xlsx.write(res);
+
+      return res.end();
+    } catch (error) {
+      console.error(
+        "Usage export failed:",
+        error.message
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Usage history could not be exported."
+      });
+    }
+  }
+);
 
 
 /* ============================================================
@@ -1179,31 +1405,43 @@ app.get(
       model:
         GEMINI_MODEL,
 
-      aiPrimaryProvider: "gemini",
-      aiFallbackProvider: null,
+      aiPrimaryProvider:
+        "gemini",
+
+      aiFallbackProvider:
+        null,
+
       aiProviders: {
+
         gemini: {
-          configured: Boolean(GEMINI_API_KEY),
-          model: GEMINI_MODEL,
-          scope: "qualitative text analysis only"
+
+          configured:
+            Boolean(
+              GEMINI_API_KEY
+            ),
+
+          model:
+            GEMINI_MODEL,
+
+          scope:
+            "financial extraction and qualitative text analysis"
+
         },
+
         localPdf: {
-          configured: true,
-          engine: "pdf-parse + deterministic FinSight extractor",
-          maxUploadMb: 45
+
+          configured:
+            true,
+
+          engine:
+            "pdf-parse + Gemini extraction",
+
+          maxUploadMb:
+            45
+
         }
+
       },
-      aiPdfProviders: [],
-      aiPdfFallbackProvider: null,
-      aiPdfFallbackMode: "local-only",
-
-      marketProvider:
-        "alphavantage",
-
-      marketConfigured:
-        Boolean(
-          ALPHA_VANTAGE_API_KEY
-        ),
 
       databaseConfigured:
         databaseEnabled,
@@ -1217,18 +1455,6 @@ app.get(
         ),
 
       reportFinancialExtraction:
-        true,
-
-      multiReportAnalysis:
-        true,
-
-      reportGroundedQA:
-        true,
-
-      automaticMarketData:
-        true,
-
-      automaticValuation:
         true,
 
       pdfProcessing:
@@ -1268,7 +1494,9 @@ async function fetchJSON(
     try {
 
       body =
-        JSON.parse(text);
+        JSON.parse(
+          text
+        );
 
     }
 
@@ -1286,14 +1514,6 @@ async function fetchJSON(
 
   if (!response.ok) {
 
-    /*
-     * Google/Gemini and several other JSON APIs return errors as
-     * structured objects (for example { error: { message, status } }).
-     * Passing that object directly to Error() produces "[object Object]"
-     * and hides the actual provider failure. Preserve a readable message
-     * and the upstream HTTP status instead.
-     */
-
     const providerError =
       body?.error;
 
@@ -1303,541 +1523,353 @@ async function fetchJSON(
         : providerError?.message;
 
     const message =
-      providerMessage
-      || body?.message
-      || body?.raw
-      || `HTTP ${response.status}`;
+      providerMessage ||
+      body?.message ||
+      body?.raw ||
+      `HTTP ${response.status}`;
 
     const error =
       new Error(
         typeof message === "string"
           ? message
-          : JSON.stringify(message)
+          : JSON.stringify(
+              message
+            )
       );
 
     error.status =
       response.status;
 
     error.providerStatus =
-      providerError?.status || null;
+      providerError?.status ||
+      null;
 
     error.providerDetails =
-      providerError?.details || null;
+      providerError?.details ||
+      null;
 
     throw error;
-
   }
 
 
   return body;
-
 }
 
 
 /* ============================================================
    11. SAFE JSON
    ============================================================ */
-
 function safeJSON(value) {
 
-  if (
-    value == null
-  ) {
+  if (value == null) {
+
     return null;
+
   }
 
+  if (typeof value === "object") {
 
-  if (
-    typeof value ===
-    "object"
-  ) {
     return value;
-  }
 
+  }
 
   try {
+
     let text = String(value).trim();
-    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+
+    /*
+
+     * Remove Markdown code fences:
+
+     *
+
+     * ```json
+
+     * {...}
+
+     * ```
+
+     */
+
+    text = text
+
+      .replace(/^```(?:json)?\s*/i, "")
+
+      .replace(/\s*```$/, "")
+
+      .trim();
+
+    /*
+
+     * Gemini may surround JSON with explanatory text.
+
+     * Extract the outermost JSON object or array.
+
+     */
+
     const firstObject = text.search(/[\[{]/);
-    const lastObject = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
-    if (firstObject >= 0 && lastObject > firstObject) text = text.slice(firstObject, lastObject + 1);
+
+    const lastObject = Math.max(
+
+      text.lastIndexOf("}"),
+
+      text.lastIndexOf("]")
+
+    );
+
+    if (
+
+      firstObject >= 0 &&
+
+      lastObject > firstObject
+
+    ) {
+
+      text = text.slice(
+
+        firstObject,
+
+        lastObject + 1
+
+      );
+
+    }
+
     return JSON.parse(text);
 
-  }
-
-  catch {
+  } catch {
 
     return null;
 
   }
 
 }
-
 /* ============================================================
-   12. GEMINI — TEXT ONLY
+   12. GEMINI
    ============================================================ */
 
-/*
- * IMPORTANT ARCHITECTURE
- *
- * Gemini is NOT used for financial-statement extraction.
- *
- * PDF financial extraction is performed locally in Section 13/14.
- *
- * Gemini is used only for qualitative text analysis after
- * the PDF has already been converted to text locally.
- */
-
-
 const analystInstructions = `
-
 You are FinSight AI, an evidence-first equity research system.
 
-The supplied annual-report evidence is the primary source of truth.
-
-Never invent missing financial values.
-
-Never substitute example-company data.
+Use only the supplied annual-report evidence.
 
 Never invent:
-
+- financial values
 - ticker symbols
 - exchanges
 - listing status
-- financial numbers
-- page references
 - auditor findings
 - management statements
 - share prices
 - valuation multiples
 
-Distinguish:
+Prefer audited consolidated statements.
+Never mix standalone and consolidated figures
+without clearly identifying them.
 
+Distinguish:
 REPORTED FACT
 CALCULATED METRIC
 MANAGEMENT CLAIM
 AI INTERPRETATION
 
-When consolidated financial statements are available,
-prefer consolidated figures for group-level investor analysis.
-
-Never mix standalone and consolidated figures without
-explicitly identifying them.
-
-A financial anomaly is an investigation prompt,
-not proof of misconduct.
-
-Do not issue personalized buy/sell instructions.
-
+Do not issue personalized buy or sell instructions.
 `;
 
-
-/* ============================================================
-   GEMINI RESPONSE TEXT
-   ============================================================ */
-
 function extractGeminiText(payload) {
-
   return (
     payload
       ?.candidates
       ?.[0]
       ?.content
-      ?.parts
-
-    || []
-
+      ?.parts || []
   )
-    .map(
-      part =>
-        part?.text || ""
-    )
+    .map(part => part?.text || "")
     .join("\n")
     .trim();
-
 }
-
-
-/* ============================================================
-   GEMINI MODEL URL
-   ============================================================ */
 
 function geminiModelUrl(model) {
-
   return (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    +
-    encodeURIComponent(model)
-    +
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    encodeURIComponent(model) +
     ":generateContent"
   );
-
 }
-
-
-/* ============================================================
-   GEMINI ERROR CHECK
-   ============================================================ */
 
 function isGeminiTemporaryError(error) {
+  const status = Number(error?.status);
 
-  const status =
-    Number(
-      error?.status
-    );
-
-
-  const providerStatus =
-    String(
-      error?.providerStatus || ""
-    )
-      .trim()
-      .toUpperCase();
-
+  const providerStatus = String(
+    error?.providerStatus || ""
+  )
+    .trim()
+    .toUpperCase();
 
   return (
-    status === 429
-    ||
-    status === 500
-    ||
-    status === 502
-    ||
-    status === 503
-    ||
-    status === 504
-    ||
-    providerStatus === "UNAVAILABLE"
-    ||
-    providerStatus === "RESOURCE_EXHAUSTED"
-    ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    providerStatus === "UNAVAILABLE" ||
+    providerStatus === "RESOURCE_EXHAUSTED" ||
     providerStatus === "INTERNAL"
   );
-
 }
-
-
-/* ============================================================
-   GEMINI TEXT GENERATION
-   ============================================================ */
 
 async function geminiGenerate(
   parts,
-  {
-    json = false
-  } = {}
+  { json = false } = {}
 ) {
-
   if (!GEMINI_API_KEY) {
-
-    throw new Error(
-      "Gemini AI is not configured."
+    const error = new Error(
+      "Gemini extraction is not configured on the server. Add GEMINI_API_KEY in Render environment variables."
     );
 
+    error.status = 503;
+    throw error;
   }
 
-
-  if (
-    !Array.isArray(parts) ||
-    !parts.length
-  ) {
-
+  if (!Array.isArray(parts) || !parts.length) {
     throw new Error(
       "Gemini requires text input."
     );
-
   }
 
+  const safeParts = parts.map(part => ({
+    text: String(part?.text || "")
+  }));
 
-  /*
-   * Gemini is text-only in the new FinSight architecture.
-   */
+  const primaryModel = String(
+    GEMINI_MODEL ||
+    "gemini-3.1-flash-lite"
+  ).trim();
 
-  const safeParts =
-    parts.map(
-      part => ({
-        text:
-          String(
-            part?.text || ""
-          )
-      })
-    );
-
-
-  const primaryModel =
-    String(
-      GEMINI_MODEL ||
-      "gemini-3.1-flash-lite"
-    ).trim();
-
-
-  const fallbackModel =
-    String(
-      process.env.GEMINI_FALLBACK_MODEL ||
-      ""
-    ).trim();
-
+  const fallbackModel = String(
+    process.env.GEMINI_FALLBACK_MODEL || ""
+  ).trim();
 
   const body = {
-
     system_instruction: {
-
       parts: [
         {
-          text:
-            analystInstructions
+          text: analystInstructions
         }
       ]
-
     },
-
 
     contents: [
-
       {
-
-        role:
-          "user",
-
-        parts:
-          safeParts
-
+        role: "user",
+        parts: safeParts
       }
-
     ],
 
-
-    generationConfig:
-
-      json
-
-        ? {
-
-            temperature:
-              0.1,
-
-            responseMimeType:
-              "application/json"
-
-          }
-
-        : {
-
-            temperature:
-              0.15
-
-          }
-
+    generationConfig: json
+      ? {
+          temperature: 0.1,
+          responseMimeType: "application/json"
+        }
+      : {
+          temperature: 0.15
+        }
   };
-
 
   const requestOptions = {
-
-    method:
-      "POST",
+    method: "POST",
 
     headers: {
-
-      "Content-Type":
-        "application/json",
-
-      "x-goog-api-key":
-        GEMINI_API_KEY
-
+      "Content-Type": "application/json",
+      "x-goog-api-key": GEMINI_API_KEY
     },
 
-    body:
-      JSON.stringify(
-        body
-      )
-
+    body: JSON.stringify(body)
   };
 
-
   async function requestModel(model) {
-
     console.log(
       `Gemini text request: ${model}`
     );
 
-
-    try {
-
-      return await fetchJSON(
-        geminiModelUrl(model),
-        {
-          ...requestOptions,
-
-          signal:
-            AbortSignal.timeout(
-              60000
-            )
-        }
-      );
-
-    }
-
-    catch (error) {
-
-      console.error(
-        `Gemini ${model} failed:`,
-        {
-          status:
-            error?.status,
-
-          providerStatus:
-            error?.providerStatus,
-
-          message:
-            error?.message
-        }
-      );
-
-
-      throw error;
-
-    }
-
+    return fetchJSON(
+      geminiModelUrl(model),
+      {
+        ...requestOptions,
+        signal: AbortSignal.timeout(60000)
+      }
+    );
   }
-
 
   let payload;
-  let modelUsed =
-    primaryModel;
-
+  let modelUsed = primaryModel;
 
   try {
-
-    payload =
-      await requestModel(
-        primaryModel
-      );
-
-  }
-
-  catch (primaryError) {
-
-    /*
-     * Only use the second Gemini model for temporary
-     * capacity/provider failures.
-     */
-
+    payload = await requestModel(primaryModel);
+  } catch (primaryError) {
     if (
       !fallbackModel ||
       fallbackModel === primaryModel ||
       !isGeminiTemporaryError(primaryError)
     ) {
-
       throw primaryError;
-
     }
-
 
     console.warn(
       `Gemini primary unavailable. Trying ${fallbackModel}.`
     );
 
-
-    payload =
-      await requestModel(
-        fallbackModel
-      );
-
-
-    modelUsed =
-      fallbackModel;
-
+    payload = await requestModel(fallbackModel);
+    modelUsed = fallbackModel;
   }
 
+  const responseText =
+    extractGeminiText(payload);
 
-  const text =
-    extractGeminiText(
-      payload
-    );
-
-
-  if (!text) {
-
+  if (!responseText) {
     throw new Error(
       "Gemini returned no usable response."
     );
-
   }
-
 
   console.log(
     `Gemini text generation successful using ${modelUsed}.`
   );
 
-
-  return text;
-
+  return responseText;
 }
-
-
-
 /* ============================================================
    13. LOCAL PDF EXTRACTION
    ============================================================ */
 
-/*
- * The PDF is now processed locally by Node.js.
- *
- * NO Gemini PDF upload.
- * NO OpenAI PDF upload.
- * NO external AI dependency for financial extraction.
- */
-
-
 const FINSIGHT_MAX_PDF_SIZE =
   45 * 1024 * 1024;
 
-
-/* ============================================================
-   LOCAL PDF TEXT EXTRACTION
-   ============================================================ */
-
 async function extractPdfTextLocally(file) {
-
   if (
     !file ||
     !Buffer.isBuffer(file.buffer) ||
     !file.buffer.length
   ) {
+    const error = new Error(
+      "Annual-report PDF is empty or unavailable."
+    );
 
-    const error =
-      new Error(
-        "Annual-report PDF is empty or unavailable."
-      );
-
-
-    error.status =
-      400;
-
-
+    error.status = 400;
     throw error;
-
   }
-
 
   if (
     file.buffer.length >
     FINSIGHT_MAX_PDF_SIZE
   ) {
+    const error = new Error(
+      "The annual-report PDF exceeds FinSight's 45 MB upload limit."
+    );
 
-    const error =
-      new Error(
-        "The annual-report PDF exceeds FinSight's 45 MB upload limit."
-      );
-
-
-    error.status =
-      413;
-
-
+    error.status = 413;
     throw error;
-
   }
-
 
   console.log(
     `Local PDF extraction started: ${(
@@ -1847,2289 +1879,512 @@ async function extractPdfTextLocally(file) {
     ).toFixed(1)} MB`
   );
 
-
   let parsed;
 
-
   try {
-
-    parsed =
-      await pdfParse(
-        file.buffer
-      );
-
-  }
-
-  catch (error) {
-
+    parsed = await pdfParse(file.buffer);
+  } catch (error) {
     console.error(
       "Local PDF parser error:",
       error
     );
 
+    const localError = new Error(
+      "The PDF could not be read locally. Confirm that it is a valid text-based PDF."
+    );
 
-    const localError =
-      new Error(
-        "The PDF could not be read locally. Confirm that it is a valid text-based PDF."
-      );
-
-
-    localError.status =
-      400;
-
-
+    localError.status = 400;
     throw localError;
-
   }
 
+  const text = String(parsed?.text || "")
+    .replace(/\u0000/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
 
-  const text =
-    String(
-      parsed?.text || ""
-    )
-      .replace(
-        /\u0000/g,
-        ""
-      )
-      .replace(
-        /\r/g,
-        "\n"
-      )
-      .replace(
-        /[ \t]+/g,
-        " "
-      )
-      .replace(
-        /\n{4,}/g,
-        "\n\n\n"
-      )
-      .trim();
+  if (text.length < 500) {
+    const error = new Error(
+      "Very little text could be extracted from this PDF. The report may be scanned or image-based."
+    );
 
-
-  if (
-    text.length < 500
-  ) {
-
-    const error =
-      new Error(
-        "Very little text could be extracted from this PDF. The report may be scanned or image-based."
-      );
-
-
-    error.status =
-      400;
-
-
+    error.status = 400;
     throw error;
-
   }
-
 
   console.log(
     `Local PDF extraction successful: ${text.length.toLocaleString()} characters.`
   );
 
-
   return {
-
     text,
-
-    pages:
-      Number(
-        parsed?.numpages
-      ) || null,
-
-    info:
-      parsed?.info || null
-
+    pages: Number(parsed?.numpages) || null,
+    info: parsed?.info || null
   };
-
 }
 
-
 /* ============================================================
-   FINANCIAL NUMBER PARSER
-   ============================================================ */
-
-function finiteFinancialNumber(value) {
-
-  if (
-    value === null ||
-    value === undefined
-  ) {
-
-    return null;
-
-  }
-
-
-  if (
-    typeof value === "number"
-  ) {
-
-    return Number.isFinite(value)
-      ? value
-      : null;
-
-  }
-
-
-  let text =
-    String(value)
-      .trim();
-
-
-  if (!text) {
-
-    return null;
-
-  }
-
-
-  if (
-    /^[-—–]$/.test(text)
-  ) {
-
-    return 0;
-
-  }
-
-
-  let negative =
-    false;
-
-
-  if (
-    /^\(.+\)$/.test(text)
-  ) {
-
-    negative =
-      true;
-
-
-    text =
-      text.slice(
-        1,
-        -1
-      );
-
-  }
-
-
-  text =
-    text
-      .replace(
-        /₹/g,
-        ""
-      )
-      .replace(
-        /,/g,
-        ""
-      )
-      .trim();
-
-
-  if (
-    !/^[+-]?\d+(?:\.\d+)?$/.test(
-      text
-    )
-  ) {
-
-    return null;
-
-  }
-
-
-  const parsed =
-    Number(text);
-
-
-  if (
-    !Number.isFinite(parsed)
-  ) {
-
-    return null;
-
-  }
-
-
-  return negative
-    ? -parsed
-    : parsed;
-
-}
-
-
-/* ============================================================
-   REPORT TEXT NORMALIZATION
-   ============================================================ */
-
-function normalizeReportText(text) {
-
-  return String(
-    text || ""
-  )
-    .replace(
-      /\u00a0/g,
-      " "
-    )
-    .replace(
-      /[ \t]+/g,
-      " "
-    )
-    .replace(
-      /\r/g,
-      "\n"
-    )
-    .replace(
-      /\n{3,}/g,
-      "\n\n"
-    )
-    .trim();
-
-}
-
-
-/* ============================================================
-   FIND FINANCIAL STATEMENT SECTIONS
-   ============================================================ */
-
-function findStatementSection(
-  text,
-  headings,
-  maxLength = 50000
-) {
-
-  const normalized =
-    normalizeReportText(
-      text
-    );
-
-
-  const lower =
-    normalized.toLowerCase();
-
-
-  let bestIndex =
-    -1;
-
-
-  for (
-    const heading
-    of headings
-  ) {
-
-    const index =
-      lower.indexOf(
-        heading.toLowerCase()
-      );
-
-
-    if (
-      index >= 0 &&
-      (
-        bestIndex === -1 ||
-        index < bestIndex
-      )
-    ) {
-
-      bestIndex =
-        index;
-
-    }
-
-  }
-
-
-  if (
-    bestIndex < 0
-  ) {
-
-    return "";
-
-  }
-
-
-  return normalized.slice(
-    bestIndex,
-    bestIndex + maxLength
-  );
-
-}
-
-
-/* ============================================================
-   EXTRACT SOURCE UNIT
-   ============================================================ */
-
-function detectFinancialUnit(text) {
-
-  const sample =
-    String(
-      text || ""
-    )
-      .slice(
-        0,
-        10000
-      )
-      .toLowerCase();
-
-
-  const patterns = [
-
-    {
-      regex:
-        /(?:₹|rs\.?|inr|indian rupees?)[^\n]{0,40}\bcrores?\b/i,
-
-      unit:
-        "INR crore"
-    },
-
-    {
-      regex:
-        /(?:₹|rs\.?|inr|indian rupees?)[^\n]{0,40}\bmillions?\b/i,
-
-      unit:
-        "INR million"
-    },
-
-    {
-      regex:
-        /(?:₹|rs\.?|inr|indian rupees?)[^\n]{0,40}\blakhs?\b/i,
-
-      unit:
-        "INR lakh"
-    },
-
-    {
-      regex:
-        /(?:₹|rs\.?|inr|indian rupees?)[^\n]{0,40}\bbillions?\b/i,
-
-      unit:
-        "INR billion"
-    },
-
-    {
-      regex:
-        /\bamounts?\s+in\s+crores?\b/i,
-
-      unit:
-        "INR crore"
-    },
-
-    {
-      regex:
-        /\bamounts?\s+in\s+millions?\b/i,
-
-      unit:
-        "INR million"
-    },
-
-    {
-      regex:
-        /\bamounts?\s+in\s+lakhs?\b/i,
-
-      unit:
-        "INR lakh"
-    }
-
-  ];
-
-
-  for (
-    const item
-    of patterns
-  ) {
-
-    if (
-      item.regex.test(sample)
-    ) {
-
-      return item.unit;
-
-    }
-
-  }
-
-
-  return null;
-
-}
-
-
-/* ============================================================
-   UNIT CONVERSION
-   ============================================================ */
-
-function monetaryCroreFactor(
-  sourceUnit
-) {
-
-  const unit =
-    String(
-      sourceUnit || ""
-    )
-      .toLowerCase();
-
-
-  if (
-    unit.includes(
-      "crore"
-    )
-  ) {
-
-    return 1;
-
-  }
-
-
-  if (
-    unit.includes(
-      "million"
-    )
-  ) {
-
-    return 0.1;
-
-  }
-
-
-  if (
-    unit.includes(
-      "lakh"
-    )
-  ) {
-
-    return 0.01;
-
-  }
-
-
-  if (
-    unit.includes(
-      "billion"
-    )
-  ) {
-
-    return 100;
-
-  }
-
-
-  return null;
-
-}
-
-
-/* ============================================================
-   LINE VALUE EXTRACTION
-   ============================================================ */
-
-function extractLineValues(
-  section,
-  labels
-) {
-
-  if (!section) {
-
-    return null;
-
-  }
-
-
-  const lines =
-    section
-      .split("\n")
-      .map(
-        line =>
-          line.trim()
-      )
-      .filter(Boolean);
-
-
-  for (
-    const line
-    of lines
-  ) {
-
-    const lower =
-      line.toLowerCase();
-
-
-    const matched =
-      labels.some(
-        label =>
-          lower.includes(
-            label.toLowerCase()
-          )
-      );
-
-
-    if (!matched) {
-
-      continue;
-
-    }
-
-
-    /*
-     * Extract accounting-style numbers:
-     *
-     * 12,345
-     * 12,345.50
-     * (12,345)
-     * -123
-     */
-
-    const matches =
-      line.match(
-        /\(?-?\d[\d,]*(?:\.\d+)?\)?/g
-      );
-
-
-    if (
-      !matches ||
-      !matches.length
-    ) {
-
-      continue;
-
-    }
-
-
-    const values =
-      matches
-        .map(
-          finiteFinancialNumber
-        )
-        .filter(
-          value =>
-            value !== null
-        );
-
-
-    if (
-      values.length
-    ) {
-
-      return {
-        line,
-        values
-      };
-
-    }
-
-  }
-
-
-  return null;
-
-}
-
-
-/* ============================================================
-   VALUE FROM STATEMENT
-   ============================================================ */
-
-function firstFinancialValue(
-  section,
-  labels
-) {
-
-  const result =
-    extractLineValues(
-      section,
-      labels
-    );
-
-
-  if (
-    !result ||
-    !result.values.length
-  ) {
-
-    return null;
-
-  }
-
-
-  /*
-   * Financial statements frequently contain a note number
-   * before the actual amount.
-   *
-   * Taking the LAST numeric value is generally safer than
-   * taking the first number on the line.
-   */
-
-  return result.values[
-    result.values.length - 1
-  ];
-
-}
-
-
-/* ============================================================
-   DETECT FINANCIAL YEARS
-   ============================================================ */
-
-function detectFinancialYears(
-  text
-) {
-
-  const matches =
-    [
-      ...String(
-        text || ""
-      ).matchAll(
-        /\b(?:20\d{2})\s*[-–]\s*(?:20)?(\d{2})\b/g
-      )
-    ];
-
-
-  const years =
-    new Set();
-
-
-  for (
-    const match
-    of matches
-  ) {
-
-    const full =
-      match[0]
-        .replace(
-          /–/g,
-          "-"
-        );
-
-
-    years.add(
-      full
-    );
-
-  }
-
-
-  return [
-    ...years
-  ].slice(
-    0,
-    10
-  );
-
-}
-
-
-/* ============================================================
-   COMPANY NAME
-   ============================================================ */
-
-function detectCompanyName(
-  text,
-  info = {}
-) {
-
-  const metadataTitle =
-    String(
-      info?.Title ||
-      info?.title ||
-      ""
-    ).trim();
-
-
-  if (
-    metadataTitle &&
-    metadataTitle.length < 200
-  ) {
-
-    return metadataTitle;
-
-  }
-
-
-  const firstLines =
-    String(
-      text || ""
-    )
-      .split("\n")
-      .map(
-        line =>
-          line.trim()
-      )
-      .filter(Boolean)
-      .slice(
-        0,
-        80
-      );
-
-
-  const companyLine =
-    firstLines.find(
-      line =>
-        /\b(limited|ltd\.?|corporation|industries|company)\b/i.test(
-          line
-        ) &&
-        line.length <= 160
-    );
-
-
-  return companyLine ||
-    "Unknown company";
-
-}
-
-
-/* ============================================================
-   SHARES OUTSTANDING
-   ============================================================ */
-
-function extractSharesOutstanding(
-  text
-) {
-
-  const section =
-    findStatementSection(
-      text,
-      [
-        "share capital",
-        "equity share capital",
-        "issued subscribed and paid",
-        "issued, subscribed and paid"
-      ],
-      30000
-    );
-
-
-  if (!section) {
-
-    return {
-      value:
-        null,
-
-      unit:
-        null
-    };
-
-  }
-
-
-  const lines =
-    section
-      .split("\n")
-      .map(
-        line =>
-          line.trim()
-      )
-      .filter(Boolean);
-
-
-  for (
-    const line
-    of lines
-  ) {
-
-    if (
-      !/\bshares?\b/i.test(
-        line
-      )
-    ) {
-
-      continue;
-
-    }
-
-
-    const matches =
-      line.match(
-        /\d[\d,]*(?:\.\d+)?/g
-      );
-
-
-    if (
-      !matches ||
-      !matches.length
-    ) {
-
-      continue;
-
-    }
-
-
-    const values =
-      matches
-        .map(
-          finiteFinancialNumber
-        )
-        .filter(
-          value =>
-            value !== null &&
-            value > 0
-        );
-
-
-    if (!values.length) {
-
-      continue;
-
-    }
-
-
-    /*
-     * Prefer a large absolute share count.
-     */
-
-    const candidate =
-      Math.max(
-        ...values
-      );
-
-
-    if (
-      candidate >= 100000
-    ) {
-
-      return {
-
-        value:
-          candidate /
-          10000000,
-
-        unit:
-          "crore shares"
-
-      };
-
-    }
-
-  }
-
-
-  return {
-
-    value:
-      null,
-
-    unit:
-      null
-
-  };
-
-}
-
-
-/* ============================================================
-   LOCAL FINANCIAL EXTRACTION ENGINE
-   ============================================================ */
-
-function extractFinancialsLocally(
-  pdfData
-) {
-
-  const text =
-    normalizeReportText(
-      pdfData.text
-    );
-
-
-  /*
-   * Locate audited statement regions first.
-   */
-
-  const profitLoss =
-    findStatementSection(
-      text,
-      [
-        "consolidated statement of profit and loss",
-        "consolidated statement of profit & loss",
-        "consolidated profit and loss",
-        "statement of consolidated income",
-        "consolidated income statement",
-        "statement of profit and loss"
-      ]
-    );
-
-
-  const balanceSheet =
-    findStatementSection(
-      text,
-      [
-        "consolidated balance sheet",
-        "consolidated statement of financial position",
-        "balance sheet"
-      ]
-    );
-
-
-  const cashFlow =
-    findStatementSection(
-      text,
-      [
-        "consolidated statement of cash flows",
-        "consolidated cash flow statement",
-        "statement of cash flows",
-        "cash flow statement"
-      ]
-    );
-
-
-  /*
-   * Prefer the unit printed around the audited
-   * profit-and-loss statement.
-   */
-
-  const sourceUnit =
-    detectFinancialUnit(
-      profitLoss
-    )
-    ||
-    detectFinancialUnit(
-      balanceSheet
-    )
-    ||
-    detectFinancialUnit(
-      cashFlow
-    );
-
-
-  const factor =
-    monetaryCroreFactor(
-      sourceUnit
-    );
-
-
-  function money(
-    section,
-    labels
-  ) {
-
-    const raw =
-      firstFinancialValue(
-        section,
-        labels
-      );
-
-
-    if (
-      raw === null ||
-      factor === null
-    ) {
-
-      return null;
-
-    }
-
-
-    return raw *
-      factor;
-
-  }
-
-
-  /* ----------------------------------------------------------
-     PROFIT & LOSS
-     ---------------------------------------------------------- */
-
-  const revenue =
-    money(
-      profitLoss,
-      [
-        "revenue from operations",
-        "revenue",
-        "total income"
-      ]
-    );
-
-
-  const operatingIncome =
-    money(
-      profitLoss,
-      [
-        "profit before finance costs",
-        "operating profit",
-        "profit from operations",
-        "ebit"
-      ]
-    );
-
-
-  const netIncome =
-    money(
-      profitLoss,
-      [
-        "profit for the year",
-        "profit for the period",
-        "net profit",
-        "profit after tax"
-      ]
-    );
-
-
-  const financeCost =
-    money(
-      profitLoss,
-      [
-        "finance costs",
-        "finance cost",
-        "interest expense"
-      ]
-    );
-
-
-  /* ----------------------------------------------------------
-     BALANCE SHEET
-     ---------------------------------------------------------- */
-
-  const totalAssets =
-    money(
-      balanceSheet,
-      [
-        "total assets"
-      ]
-    );
-
-
-  const currentAssets =
-    money(
-      balanceSheet,
-      [
-        "total current assets",
-        "current assets"
-      ]
-    );
-
-
-  const currentLiabilities =
-    money(
-      balanceSheet,
-      [
-        "total current liabilities",
-        "current liabilities"
-      ]
-    );
-
-
-  const totalEquity =
-    money(
-      balanceSheet,
-      [
-        "total equity",
-        "total shareholders' equity",
-        "equity attributable"
-      ]
-    );
-
-
-  const cash =
-    money(
-      balanceSheet,
-      [
-        "cash and cash equivalents",
-        "cash & cash equivalents"
-      ]
-    );
-
-
-  const inventory =
-    money(
-      balanceSheet,
-      [
-        "inventories",
-        "inventory"
-      ]
-    );
-
-
-  const accountsReceivable =
-    money(
-      balanceSheet,
-      [
-        "trade receivables",
-        "accounts receivable"
-      ]
-    );
-
-
-  const accountsPayable =
-    money(
-      balanceSheet,
-      [
-        "trade payables",
-        "accounts payable"
-      ]
-    );
-
-
-  /*
-   * Borrowings may appear in several lines.
-   *
-   * This simple deterministic extractor uses the first
-   * clearly labelled total-borrowings/debt line.
-   */
-
-  const totalDebt =
-    money(
-      balanceSheet,
-      [
-        "total borrowings",
-        "total debt",
-        "borrowings"
-      ]
-    );
-
-
-  /* ----------------------------------------------------------
-     CASH FLOW
-     ---------------------------------------------------------- */
-
-  const operatingCashFlow =
-    money(
-      cashFlow,
-      [
-        "net cash generated from operating activities",
-        "net cash from operating activities",
-        "cash generated from operating activities",
-        "net cash flows from operating activities"
-      ]
-    );
-
-
-  const capex =
-    money(
-      cashFlow,
-      [
-        "purchase of property, plant and equipment",
-        "purchase of property plant and equipment",
-        "purchase of fixed assets",
-        "capital expenditure"
-      ]
-    );
-
-
-  /* ----------------------------------------------------------
-     SHARES
-     ---------------------------------------------------------- */
-
-  const shares =
-    extractSharesOutstanding(
-      text
-    );
-
-
-  /* ----------------------------------------------------------
-     FINANCIAL YEAR
-     ---------------------------------------------------------- */
-
-  const years =
-    detectFinancialYears(
-      [
-        profitLoss,
-        balanceSheet,
-        cashFlow
-      ].join("\n")
-    );
-
-
-  let year =
-    null;
-
-
-  const yearNumbers =
-    [
-      ...[
-        profitLoss,
-        balanceSheet,
-        cashFlow
-      ]
-        .join("\n")
-        .matchAll(
-          /\b20\d{2}\b/g
-        )
-    ]
-      .map(
-        match =>
-          Number(
-            match[0]
-          )
-      )
-      .filter(
-        value =>
-          value >= 2000 &&
-          value <= 2200
-      );
-
-
-  if (
-    yearNumbers.length
-  ) {
-
-    year =
-      Math.max(
-        ...yearNumbers
-      );
-
-  }
-
-
-  const financialYear =
-    year
-      ? `FY${year - 1}-${String(year).slice(-2)}`
-      : years[0] || null;
-
-
-  /* ----------------------------------------------------------
-     COMPANY
-     ---------------------------------------------------------- */
-
-  const companyName =
-    detectCompanyName(
-      text,
-      pdfData.info
-    );
-
-
-  /* ----------------------------------------------------------
-     STATEMENT BASIS
-     ---------------------------------------------------------- */
-
-  const hasConsolidated =
-    /\bconsolidated\b/i.test(
-      [
-        profitLoss,
-        balanceSheet,
-        cashFlow
-      ].join("\n")
-    );
-
-
-  const statementBasis =
-    hasConsolidated
-      ? "Consolidated"
-      : "Standalone/Unconfirmed";
-
-
-  /* ----------------------------------------------------------
-     EBITDA
-     ---------------------------------------------------------- */
-
-  let ebitda =
-    money(
-      profitLoss,
-      [
-        "ebitda",
-        "earnings before interest tax depreciation"
-      ]
-    );
-
-
-  /*
-   * Do not fabricate EBITDA if it cannot be
-   * reliably established.
-   */
-
-  if (
-    ebitda === null
-  ) {
-
-    ebitda =
-      null;
-
-  }
-
-
-  /* ----------------------------------------------------------
-     EXTRACTION NOTES
-     ---------------------------------------------------------- */
-
-  const notes =
-    [];
-
-
-  if (!sourceUnit) {
-
-    notes.push(
-      "The monetary statement unit could not be established reliably; monetary values were withheld."
-    );
-
-  }
-
-
-  if (!profitLoss) {
-
-    notes.push(
-      "A profit-and-loss statement section could not be located automatically."
-    );
-
-  }
-
-
-  if (!balanceSheet) {
-
-    notes.push(
-      "A balance-sheet section could not be located automatically."
-    );
-
-  }
-
-
-  if (!cashFlow) {
-
-    notes.push(
-      "A cash-flow statement section could not be located automatically."
-    );
-
-  }
-
-
-  if (ebitda === null) {
-
-    notes.push(
-      "EBITDA was not explicitly identified and was not fabricated."
-    );
-
-  }
-
-
-  if (
-    shares.value === null
-  ) {
-
-    notes.push(
-      "Period-end shares outstanding could not be established reliably."
-    );
-
-  }
-
-
-  const row = {
-
-    company:
-      companyName,
-
-    financial_year:
-      financialYear,
-
-    year,
-
-    statement_basis:
-      statementBasis,
-
-    source_unit:
-      "INR crore",
-
-    original_source_unit:
-      sourceUnit,
-
-    revenue,
-
-    ebitda,
-
-    cogs:
-      null,
-
-    operating_income:
-      operatingIncome,
-
-    net_income:
-      netIncome,
-
-    total_assets:
-      totalAssets,
-
-    current_assets:
-      currentAssets,
-
-    current_liabilities:
-      currentLiabilities,
-
-    total_debt:
-      totalDebt,
-
-    cash,
-
-    total_equity:
-      totalEquity,
-
-    operating_cash_flow:
-      operatingCashFlow,
-
-    capex,
-
-    inventory,
-
-    accounts_receivable:
-      accountsReceivable,
-
-    accounts_payable:
-      accountsPayable,
-
-    finance_cost:
-      financeCost,
-
-    shares_outstanding:
-      shares.value,
-
-    shares_outstanding_unit:
-      shares.unit,
-
-    source_pages:
-      [],
-
-    extraction_notes:
-      notes.join(" ")
-
-  };
-
-
-  /*
-   * Require at least one core financial value.
-   */
-
-  const meaningfulFields = [
-
-    revenue,
-    operatingIncome,
-    netIncome,
-    totalAssets,
-    totalEquity,
-    operatingCashFlow
-
-  ];
-
-
-  const hasFinancialData =
-    meaningfulFields.some(
-      value =>
-        value !== null &&
-        Number.isFinite(value)
-    );
-
-
-  if (!hasFinancialData) {
-
-    throw new Error(
-      "The PDF text was extracted successfully, but FinSight could not reliably locate the audited financial-statement values."
-    );
-
-  }
-
-
-  return {
-
-    company: {
-
-      name:
-        companyName,
-
-      legal_name:
-        companyName,
-
-      listing_status:
-        "unknown",
-
-      ticker:
-        null,
-
-      exchange:
-        null,
-
-      isin:
-        null,
-
-      currency:
-        "₹",
-
-      nse_code:
-        null,
-
-      bse_code:
-        null,
-
-      extraction_confidence:
-
-        profitLoss &&
-        balanceSheet &&
-        cashFlow &&
-        sourceUnit
-
-          ? "High"
-
-          : "Medium"
-
-    },
-
-
-    financials: [
-      row
-    ],
-
-
-    validation: {
-
-      consolidated_preferred:
-        true,
-
-      years_found:
-        financialYear
-          ? [financialYear]
-          : [],
-
-      missing_critical_fields:
-
-        [
-          ["revenue", revenue],
-          ["operating_income", operatingIncome],
-          ["net_income", netIncome],
-          ["total_assets", totalAssets],
-          ["total_equity", totalEquity],
-          ["operating_cash_flow", operatingCashFlow],
-          ["shares_outstanding", shares.value]
-        ]
-
-          .filter(
-            ([, value]) =>
-              value === null
-          )
-
-          .map(
-            ([name]) =>
-              name
-          ),
-
-
-      warnings:
-        notes
-
-    }
-
-  };
-
-}
-
-
-
-/* ============================================================
-   14. FINANCIAL EXTRACTION — GEMINI-FIRST
+   14. FINANCIAL EXTRACTION NORMALIZATION
    ============================================================ */
 
 function dashboardNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-
-  let s = String(value).trim();
-  if (!s || /^(n\/a|na|null|not available|not disclosed|—|-)$/i.test(s)) return null;
-
-  let negative = false;
-  if (/^\(.+\)$/.test(s)) {
-    negative = true;
-    s = s.slice(1, -1);
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return null;
   }
 
-  s = s.replace(/[₹,$£€]/g, "").replace(/,/g, "").trim();
-  const n = Number(s);
-  if (!Number.isFinite(n)) return null;
-  return negative ? -n : n;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  let text = String(value).trim();
+
+  if (
+    /^(n\/a|na|null|not available|not disclosed|—|-)$/i.test(
+      text
+    )
+  ) {
+    return null;
+  }
+
+  let negative = false;
+
+  if (/^\(.+\)$/.test(text)) {
+    negative = true;
+    text = text.slice(1, -1);
+  }
+
+  text = text
+    .replace(/[₹,$£€]/g, "")
+    .replace(/,/g, "")
+    .trim();
+
+  const number = Number(text);
+
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+
+  return negative ? -number : number;
 }
 
 function unitFactor(unit) {
-  const s = String(unit || "INR crore").toLowerCase();
-  if (s.includes("billion")) return 100;
-  if (s.includes("million")) return 0.1;
-  if (s.includes("lakh")) return 0.01;
+  const text = String(
+    unit || "INR crore"
+  ).toLowerCase();
+
+  if (text.includes("billion")) return 100;
+  if (text.includes("million")) return 0.1;
+  if (text.includes("lakh")) return 0.01;
+
   return 1;
 }
 
 function normalizedMoney(value, unit) {
-  const n = dashboardNumber(value);
-  return n == null ? null : n * unitFactor(unit);
+  const number = dashboardNumber(value);
+
+  return number == null
+    ? null
+    : number * unitFactor(unit);
 }
 
 function normalizedShares(value, unit) {
-  const n = dashboardNumber(value);
-  if (n == null) return null;
-  const s = String(unit || "crore shares").toLowerCase();
-  if (s.includes("million")) return n / 10;
-  if (s.includes("lakh")) return n / 100;
-  if (s.includes("crore")) return n;
-  return n / 10000000;
+  const number = dashboardNumber(value);
+
+  if (number == null) {
+    return null;
+  }
+
+  const text = String(
+    unit || "crore shares"
+  ).toLowerCase();
+
+  if (text.includes("million")) {
+    return number / 10;
+  }
+
+  if (text.includes("lakh")) {
+    return number / 100;
+  }
+
+  if (text.includes("crore")) {
+    return number;
+  }
+
+  return number / 10000000;
 }
 
-function dashboardRow(row = {}, companyName = "Unknown company") {
-  let financialYear = row.financial_year ?? row.financialYear ?? null;
-  let year = dashboardNumber(row.year ?? row.end_year);
+function dashboardRow(
+  row = {},
+  companyName = "Unknown company"
+) {
+  let financialYear =
+    row.financial_year ??
+    row.financialYear ??
+    null;
+
+  let year = dashboardNumber(
+    row.year ?? row.end_year
+  );
 
   if (!year && financialYear) {
-    const years = String(financialYear).match(/20\d{2}/g);
-    if (years?.length) year = Math.max(...years.map(Number));
+    const years = String(
+      financialYear
+    ).match(/20\d{2}/g);
+
+    if (years?.length) {
+      year = Math.max(
+        ...years.map(Number)
+      );
+    }
   }
 
   if (!financialYear && year) {
-    financialYear = `${year - 1}-${String(year).slice(-2)}`;
+    financialYear =
+      `${year - 1}-${String(year).slice(-2)}`;
   }
 
-  const sourceUnit = row.source_unit ?? row.original_source_unit ?? "INR crore";
-  const moneyValue = value => normalizedMoney(value, sourceUnit);
+  const sourceUnit =
+    row.source_unit ??
+    row.original_source_unit ??
+    "INR crore";
+
+  const money = value =>
+    normalizedMoney(value, sourceUnit);
+
   return {
-    company: row.company ?? row.company_name ?? companyName,
+    company:
+      row.company ??
+      row.company_name ??
+      companyName,
+
     financial_year: financialYear,
     year,
-    statement_basis: row.statement_basis ?? "Consolidated",
+
+    statement_basis:
+      row.statement_basis ??
+      "Consolidated",
+
     source_unit: "INR crore",
-    original_source_unit: row.original_source_unit ?? row.source_unit ?? null,
 
-    revenue: moneyValue(row.revenue ?? row.revenue_from_operations),
-    total_income: moneyValue(row.total_income),
-    other_income: moneyValue(row.other_income),
-    revenue_basis: row.revenue_basis ?? (row.revenue != null ? "reported revenue" : null),
+    original_source_unit:
+      row.original_source_unit ??
+      row.source_unit ??
+      null,
 
-    ebitda: moneyValue(row.ebitda),
-    cogs: moneyValue(row.cogs ?? row.cost_of_goods_sold),
-    operating_income: moneyValue(row.operating_income ?? row.operating_profit ?? row.ebit),
-    net_income: moneyValue(
-      row.net_income ?? row.net_profit ?? row.profit_after_tax ?? row.pat ?? row.profit_for_the_year
+    revenue: money(
+      row.revenue ??
+      row.revenue_from_operations
     ),
-    finance_cost: moneyValue(row.finance_cost ?? row.finance_costs ?? row.interest_expense),
 
-    total_assets: moneyValue(row.total_assets),
-    current_assets: moneyValue(row.current_assets ?? row.total_current_assets),
-    current_liabilities: moneyValue(row.current_liabilities ?? row.total_current_liabilities),
-    total_debt: moneyValue(row.total_debt ?? row.total_borrowings ?? row.borrowings),
-    cash: moneyValue(row.cash ?? row.cash_and_equivalents ?? row.cash_and_cash_equivalents),
-    net_debt_cash: moneyValue(row.net_debt_cash),
-    net_debt_cash_basis: row.net_debt_cash_basis ?? "cash and cash equivalents",
-    total_equity: moneyValue(row.total_equity ?? row.shareholders_equity ?? row.shareholder_equity),
-    inventory: moneyValue(row.inventory ?? row.inventories),
-    accounts_receivable: moneyValue(
-      row.accounts_receivable ?? row.receivables ?? row.trade_receivables
+    total_income: money(
+      row.total_income
     ),
-    accounts_payable: moneyValue(row.accounts_payable ?? row.payables ?? row.trade_payables),
 
-    operating_cash_flow: moneyValue(
+    other_income: money(
+      row.other_income
+    ),
+
+    ebitda: money(row.ebitda),
+
+    cogs: money(
+      row.cogs ??
+      row.cost_of_goods_sold
+    ),
+
+    operating_income: money(
+      row.operating_income ??
+      row.operating_profit ??
+      row.ebit
+    ),
+
+    net_income: money(
+      row.net_income ??
+      row.net_profit ??
+      row.profit_after_tax ??
+      row.pat ??
+      row.profit_for_the_year
+    ),
+
+    finance_cost: money(
+      row.finance_cost ??
+      row.finance_costs ??
+      row.interest_expense
+    ),
+
+    total_assets: money(
+      row.total_assets
+    ),
+
+    current_assets: money(
+      row.current_assets ??
+      row.total_current_assets
+    ),
+
+    current_liabilities: money(
+      row.current_liabilities ??
+      row.total_current_liabilities
+    ),
+
+    total_debt: money(
+      row.total_debt ??
+      row.total_borrowings ??
+      row.borrowings
+    ),
+
+    cash: money(
+      row.cash ??
+      row.cash_and_equivalents ??
+      row.cash_and_cash_equivalents
+    ),
+
+    net_debt_cash: money(
+      row.net_debt_cash
+    ),
+
+    total_equity: money(
+      row.total_equity ??
+      row.shareholders_equity ??
+      row.shareholder_equity
+    ),
+
+    inventory: money(
+      row.inventory ??
+      row.inventories
+    ),
+
+    accounts_receivable: money(
+      row.accounts_receivable ??
+      row.receivables ??
+      row.trade_receivables
+    ),
+
+    accounts_payable: money(
+      row.accounts_payable ??
+      row.payables ??
+      row.trade_payables
+    ),
+
+    operating_cash_flow: money(
       row.operating_cash_flow ??
       row.cash_flow_from_operations ??
       row.net_cash_from_operating_activities
     ),
-    capex: moneyValue(row.capex ?? row.capital_expenditure),
 
-    shares_outstanding: normalizedShares(row.shares_outstanding ?? row.period_end_shares_outstanding, row.shares_outstanding_unit),
-    shares_outstanding_unit: row.shares_outstanding_unit ?? "crore shares",
-    source_pages: Array.isArray(row.source_pages) ? row.source_pages : [],
-    extraction_notes: row.extraction_notes ?? null
+    capex: money(
+      row.capex ??
+      row.capital_expenditure
+    ),
+
+    shares_outstanding: normalizedShares(
+      row.shares_outstanding ??
+      row.period_end_shares_outstanding,
+      row.shares_outstanding_unit
+    ),
+
+    shares_outstanding_unit:
+      row.shares_outstanding_unit ??
+      "crore shares",
+
+    source_pages:
+      Array.isArray(row.source_pages)
+        ? row.source_pages
+        : [],
+
+    extraction_notes:
+      row.extraction_notes ?? null
   };
 }
 
-function normalizeGeminiDashboardPayload(raw = {}) {
-  let p = raw;
+function normalizeGeminiDashboardPayload(
+  raw = {}
+) {
+  let payload = raw;
 
-  if (Array.isArray(p)) p = p[0] ?? {};
-  if (p.result && typeof p.result === "object") p = p.result;
-  if (p.data && typeof p.data === "object") p = p.data;
-
-  const c = p.company && typeof p.company === "object" ? p.company : {};
-  const companyName = c.name ?? c.legal_name ?? p.company_name ?? "Unknown company";
-
-  let rows = p.financials ?? p.financial_rows ?? p.financial_history ?? p.years ?? [];
-  if (!Array.isArray(rows) && rows && typeof rows === "object") rows = Object.values(rows);
-
-  const financials = (Array.isArray(rows) ? rows : [])
-    .map(row => dashboardRow(row, companyName))
-    .filter(row => row.year != null || row.financial_year)
-    .sort((a, b) => (a.year ?? 0) - (b.year ?? 0));
-
-  if (!financials.length) {
-    throw new Error("Gemini returned no dashboard-compatible financial-year rows.");
+  if (Array.isArray(payload)) {
+    payload = payload[0] ?? {};
   }
 
-  const core = [
-    "revenue", "ebitda", "operating_income", "net_income", "total_assets",
-    "current_assets", "current_liabilities", "total_debt", "cash",
-    "total_equity", "operating_cash_flow", "capex", "accounts_receivable"
-  ];
+  if (
+    payload.result &&
+    typeof payload.result === "object"
+  ) {
+    payload = payload.result;
+  }
 
-  if (!financials.some(r => core.some(k => Number.isFinite(r[k])))) {
-    throw new Error("Gemini returned financial years but no safely usable financial values.");
+  if (
+    payload.data &&
+    typeof payload.data === "object"
+  ) {
+    payload = payload.data;
+  }
+
+  const company =
+    payload.company &&
+    typeof payload.company === "object"
+      ? payload.company
+      : {};
+
+  const companyName =
+    company.name ??
+    company.legal_name ??
+    payload.company_name ??
+    "Unknown company";
+
+  let rows =
+    payload.financials ??
+    payload.financial_rows ??
+    payload.financial_history ??
+    payload.years ??
+    [];
+
+  if (
+    !Array.isArray(rows) &&
+    rows &&
+    typeof rows === "object"
+  ) {
+    rows = Object.values(rows);
+  }
+
+  const financials = (
+    Array.isArray(rows) ? rows : []
+  )
+    .map(row =>
+      dashboardRow(row, companyName)
+    )
+    .filter(row =>
+      row.year != null ||
+      row.financial_year
+    )
+    .sort(
+      (a, b) =>
+        (a.year ?? 0) - (b.year ?? 0)
+    );
+
+  if (!financials.length) {
+    throw new Error(
+      "Gemini returned no dashboard-compatible financial-year rows."
+    );
   }
 
   return {
     company: {
-      name: c.name ?? companyName,
-      legal_name: c.legal_name ?? companyName,
-      listing_status: c.listing_status ?? "unknown",
-      ticker: c.ticker ?? null,
-      exchange: c.exchange ?? null,
-      nse_code: c.nse_code ?? null,
-      bse_code: c.bse_code ?? null,
-      isin: c.isin ?? null,
-      currency: c.currency ?? "INR",
+      name: company.name ?? companyName,
+      legal_name:
+        company.legal_name ?? companyName,
+      listing_status:
+        company.listing_status ?? "unknown",
+      ticker: company.ticker ?? null,
+      exchange: company.exchange ?? null,
+      nse_code: company.nse_code ?? null,
+      bse_code: company.bse_code ?? null,
+      isin: company.isin ?? null,
+      currency: company.currency ?? "INR",
       extraction_confidence:
-        c.extraction_confidence ?? p.extraction_confidence ?? p.confidence ?? "Gemini extracted"
+        company.extraction_confidence ??
+        payload.extraction_confidence ??
+        payload.confidence ??
+        "Gemini extracted"
     },
+
     financials,
+
     validation: {
       consolidated_preferred: true,
-      years_found: financials.map(r => r.financial_year).filter(Boolean),
-      warnings: Array.isArray(p.warnings) ? p.warnings : []
+      years_found: financials
+        .map(row => row.financial_year)
+        .filter(Boolean),
+
+      warnings: Array.isArray(
+        payload.warnings
+      )
+        ? payload.warnings
+        : []
     }
   };
 }
-
-function financialExtractionPrompt(reportText, filename) {
-  return `
-You are FinSight's annual-report financial extraction engine.
-
-FILE: ${filename}
-
-Extract audited financial data for the dashboard.
-
-SOURCE PRIORITY:
-1. Audited CONSOLIDATED financial statements.
-2. Consolidated notes.
-3. Standalone only if consolidated statements genuinely do not exist.
-
-Never substitute financial highlights, investor-presentation KPIs,
-bookings, pre-sales, adjusted PAT or adjusted EBITDA for audited figures.
-
-STRICT RULES:
-- Never invent values.
-- Missing/unsupported values MUST be null, never zero.
-- Never mix consolidated and standalone figures.
-- Extract every reliably comparable financial year.
-- Monetary values MUST be normalized to INR CRORE.
-- Shares outstanding MUST be normalized to CRORE SHARES.
-- Preserve negative reported values.
-- revenue means revenue from operations/customer revenue, not total income.
-- operating_income means EBIT/operating profit, NOT EBITDA.
-- operating_cash_flow means net cash generated from operating activities.
-- capex should be a positive cash expenditure amount so OCF - capex works.
-- cash means cash/cash equivalents suitable for net-debt calculation.
-
-CONVERSIONS:
-INR crore => unchanged
-INR million => divide by 10
-INR lakh => divide by 100
-INR billion => multiply by 100
-
-Return VALID JSON ONLY:
-
-{
-  "company": {
-    "name": "",
-    "legal_name": "",
-    "listing_status": "listed|unlisted|unknown",
-    "ticker": null,
-    "exchange": null,
-    "nse_code": null,
-    "bse_code": null,
-    "isin": null,
-    "currency": "INR",
-    "extraction_confidence": "High|Medium|Low"
-  },
-  "financials": [
-    {
-      "company": "",
-      "financial_year": "2025-26",
-      "year": 2026,
-      "statement_basis": "Consolidated",
-      "source_unit": "INR crore",
-      "original_source_unit": "",
-      "revenue": null,
-      "total_income": null,
-      "other_income": null,
-      "revenue_basis": "reported revenue",
-      "ebitda": null,
-      "cogs": null,
-      "operating_income": null,
-      "net_income": null,
-      "finance_cost": null,
-      "total_assets": null,
-      "current_assets": null,
-      "current_liabilities": null,
-      "total_debt": null,
-      "cash": null,
-      "net_debt_cash": null,
-      "net_debt_cash_basis": null,
-      "total_equity": null,
-      "inventory": null,
-      "accounts_receivable": null,
-      "accounts_payable": null,
-      "operating_cash_flow": null,
-      "capex": null,
-      "shares_outstanding": null,
-      "shares_outstanding_unit": "crore shares",
-      "source_pages": [],
-      "extraction_notes": null
-    }
-  ],
-  "warnings": []
-}
-
-EBITDA: return only when explicitly reported or reliably derivable from disclosed components.
-EBIT: search EBIT, operating profit, profit before finance costs and tax, or a clearly equivalent audited line.
-DEBT: include interest-bearing current and non-current borrowings; exclude trade payables.
-RECEIVABLES: use trade/accounts receivables.
-YEAR: "2025-26" has year 2026.
-
-ANNUAL REPORT TEXT:
-${reportText}
-`;
-}
-
-async function extractFinancialsWithGemini(file) {
-  const pdfData = await extractPdfTextLocally(file);
-
-  const maxChars = Number(process.env.GEMINI_FINANCIAL_TEXT_LIMIT || 900000);
-  const reportText =
-    pdfData.text.length > maxChars ? pdfData.text.slice(0, maxChars) : pdfData.text;
-
-  console.log("Gemini financial extraction started:", {
-    file: file.originalname,
-    model: GEMINI_MODEL,
-    sizeMB: Number((file.size / 1024 / 1024).toFixed(2)),
-    extractedCharacters: pdfData.text.length,
-    sentCharacters: reportText.length
-  });
-
-  const responseText = await geminiGenerate(
-    [{ text: financialExtractionPrompt(reportText, file.originalname) }],
-    { json: true }
-  );
-
-  console.log("Gemini financial response received.");
-
-  const parsed = safeJSON(responseText);
-  if (!parsed) throw new Error("Gemini returned unreadable financial JSON.");
-
-  return {
-    ...normalizeGeminiDashboardPayload(parsed),
-    provider: "gemini",
-    model: GEMINI_MODEL,
-    pdf: {
-      pages: pdfData.pages,
-      extractedCharacters: pdfData.text.length,
-      sentCharacters: reportText.length
-    }
-  };
-}
-
-app.post(
-  "/api/ai/extract-financials",
-  upload.single("report"),
-  async (req, res) => {
-    if (!requestUser(req)) {
-      return res.status(401).json({ ok: false, error: "Please log in before uploading a report." });
-    }
-    try {
-      if (!req.file) {
-        return res.status(400).json({
-          ok: false,
-          error: "Upload an annual-report PDF.",
-          code: "REPORT_REQUIRED"
-        });
-      }
-
-      if (req.file.mimetype && req.file.mimetype !== "application/pdf") {
-        return res.status(400).json({
-          ok: false,
-          error: "FinSight requires an annual-report PDF.",
-          code: "INVALID_REPORT"
-        });
-      }
-
-      await recordUsage(req, "report_upload_started", { filename: req.file.originalname, status: "started" });
-
-      const result = await extractFinancialsWithGemini(req.file);
-      let persisted = null;
-
-      if (pool) {
-        try {
-          const companyRow = await upsertCompany({
-            name: result.company.legal_name || result.company.name || "Unknown company",
-            ticker: result.company.ticker,
-            exchange: result.company.exchange,
-            listingStatus: result.company.listing_status,
-            isin: result.company.isin
-          });
-
-          const hash = crypto
-            .createHash("sha256")
-            .update(req.file.buffer)
-            .digest("hex");
-
-          const latestYear =
-            result.financials
-              .map(r => Number(r.year))
-              .filter(Number.isFinite)
-              .sort((a, b) => b - a)[0] || null;
-
-          const inserted = await dbQuery(
-            `INSERT INTO reports
-             (company_id, filename, report_year, metrics, analysis, source_hash)
-             VALUES ($1,$2,$3,$4,$5,$6)
-             RETURNING id, created_at`,
-            [
-              companyRow.id,
-              req.file.originalname,
-              latestYear,
-              {
-                provider: "gemini",
-                model: GEMINI_MODEL,
-                financials: result.financials,
-                validation: result.validation
-              },
-              {},
-              hash
-            ]
-          );
-
-          persisted = {
-            companyId: companyRow.id,
-            reportId: inserted.rows[0].id,
-            createdAt: inserted.rows[0].created_at
-          };
-        } catch (dbError) {
-          console.error("Extraction succeeded; database save failed:", dbError);
-          result.validation.warnings.push(
-            "Extraction succeeded, but database persistence failed."
-          );
-        }
-      }
-
-      const dashboardPayload = {
-        ok: true,
-        company: result.company,
-        financials: result.financials,
-        validation: result.validation,
-        persisted,
-        provider: "gemini",
-        model: result.model,
-        pdf: result.pdf
-      };
-
-      console.log(
-        "FINAL DASHBOARD PAYLOAD:",
-        JSON.stringify(dashboardPayload, null, 2)
-      );
-
-      await recordUsage(req, "report_extraction_success", {
-        filename: req.file.originalname,
-        company: result.company?.name,
-        reportYear: result.financials.map(row => Number(row.year)).filter(Number.isFinite).sort((a, b) => b - a)[0],
-        status: "success",
-        model: result.model
-      });
-
-      return res.json(dashboardPayload);
-
-    } catch (error) {
-      console.error("Gemini financial extraction error:", {
-        status: error?.status,
-        providerStatus: error?.providerStatus,
-        message: error?.message
-      });
-
-      let status = Number(error?.status);
-      if (!Number.isInteger(status) || status < 400 || status > 599) status = 500;
-
-      await recordUsage(req, "report_extraction_failed", {
-        filename: req.file?.originalname,
-        status: "failed",
-        model: GEMINI_MODEL,
-        error: status === 429 ? "Gemini quota exceeded" : error?.message
-      });
-
-      const publicError = status === 429
-        ? "AI extraction is temporarily unavailable because the provider quota has been reached. Please try again shortly."
-        : status === 400
-          ? (error?.message || "Please upload a valid annual-report PDF.")
-          : "Financial extraction is temporarily unavailable. Please try again.";
-      return res.status(status).json({
-        ok: false,
-        error: publicError,
-        code: status === 429 ? "GEMINI_QUOTA_EXCEEDED" : "GEMINI_EXTRACTION_FAILED",
-        provider: "gemini",
-        model: GEMINI_MODEL
-      });
-    }
-  }
-);
-
-
 /* ============================================================
-   15. ANNUAL REPORT AI
+   15. ANNUAL REPORT AI ANALYSIS
    ============================================================ */
-
-/*
- * Financial extraction is already local.
- *
- * This route:
- *
- * PDF
- * ↓
- * local pdf-parse
- * ↓
- * extracted TEXT
- * ↓
- * Gemini
- *
- * The PDF itself is NEVER sent to Gemini.
- */
-
 
 app.post(
   "/api/ai/analyze-report",
-
-  upload.single(
-    "report"
-  ),
-
-  async (
-    req,
-    res
-  ) => {
-
+  upload.single("report"),
+  async (req, res) => {
     try {
-
       if (!req.file) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Upload an annual-report PDF."
-
-          });
-
+        return res.status(400).json({
+          ok: false,
+          error: "Upload an annual-report PDF."
+        });
       }
 
+      const isPdf =
+        req.file.mimetype === "application/pdf" ||
+        /\.pdf$/i.test(
+          req.file.originalname || ""
+        );
 
-      /* ------------------------------------------------------
-         EXTRACT LOCALLY
-         ------------------------------------------------------ */
+      if (!isPdf) {
+        return res.status(400).json({
+          ok: false,
+          error: "Please upload a valid PDF."
+        });
+      }
 
       const pdfData =
-        await extractPdfTextLocally(
-          req.file
-        );
-
+        await extractPdfTextLocally(req.file);
 
       const metrics =
-        safeJSON(
-          req.body.metrics
-        );
-
-
-      /*
-       * Gemini has a large context window, but sending an
-       * unnecessarily enormous annual report increases latency.
-       *
-       * Keep a generous evidence window.
-       */
-
-      const MAX_REPORT_TEXT =
-        900000;
-
+        safeJSON(req.body?.metrics);
 
       const reportText =
-        pdfData.text.length >
-          MAX_REPORT_TEXT
-
-          ? pdfData.text.slice(
-              0,
-              MAX_REPORT_TEXT
-            )
-
+        pdfData.text.length > 900000
+          ? pdfData.text.slice(0, 900000)
           : pdfData.text;
 
-
       const prompt = `
+You are FinSight AI.
 
-Analyze the following annual-report evidence as an
-evidence-first long-term investor.
+Analyze this annual-report evidence using only
+the supplied report text and structured financial data.
 
-IMPORTANT:
+Never invent facts or financial values.
+If evidence is missing, use null or an empty array.
 
-The text below was extracted locally from the uploaded
-annual-report PDF.
+STRUCTURED FINANCIAL DATA:
+${JSON.stringify(metrics || {}, null, 2)}
 
-Use ONLY the supplied annual-report evidence and structured
-FinSight financial context.
-
-Never invent missing information.
-
-============================================================
-STRUCTURED FINANCIAL CONTEXT
-============================================================
-
-${JSON.stringify(
-  metrics || {},
-  null,
-  2
-)}
-
-============================================================
-ANNUAL REPORT TEXT
-============================================================
-
+ANNUAL REPORT TEXT:
 ${reportText}
-
-============================================================
-ANALYSIS
-============================================================
-
-Analyze:
-
-BUSINESS
-
-- business model
-- revenue drivers
-- products and services
-- operating segments
-- geographic exposure
-- competitive position
-
-FINANCIAL QUALITY
-
-- revenue
-- EBITDA
-- margins
-- profit
-- operating cash flow
-- cash conversion
-- working capital
-- leverage
-- returns
-
-MANAGEMENT
-
-- strategy
-- guidance
-- targets
-- promises
-- execution
-
-CAPITAL ALLOCATION
-
-- capital expenditure
-- acquisitions
-- disposals
-- dividends
-- debt
-- investments
-
-GOVERNANCE
-
-- board observations
-- related-party transactions
-- promoter or parent relationships
-- material governance issues
-
-AUDITOR
-
-- audit opinion
-- qualifications
-- key audit matters
-- internal controls
-
-RISKS
-
-- regulatory
-- competition
-- technology
-- leverage
-- litigation
-- contingent liabilities
-- customer concentration
-- cybersecurity
-- execution
-
-============================================================
-OUTPUT
-============================================================
 
 Return valid JSON only:
 
 {
   "company": "",
-
   "report_type": "single",
-
   "financial_years": [],
-
   "overall_view": "",
-
   "confidence": "High|Medium|Low",
-
-  "yearly_analysis": [
-    {
-      "financial_year": "",
-      "statement_basis": "Consolidated|Standalone|Mixed",
-      "business_summary": "",
-      "financial_summary": {},
-      "good": [],
-      "bad": [],
-      "watch": [],
-      "risks": [],
-      "management": "",
-      "governance": "",
-      "auditor": "",
-      "capital_allocation": ""
-    }
-  ],
-
-  "trend_analysis": {
-    "revenue": "",
-    "ebitda": "",
-    "profit": "",
-    "margins": "",
-    "cash_flow": "",
-    "cash_conversion": "",
-    "debt": "",
-    "finance_cost": "",
-    "working_capital": "",
-    "receivables": "",
-    "inventory": "",
-    "returns": "",
-    "capital_expenditure": "",
-    "capital_allocation": ""
-  },
-
-  "management_promise_tracker": [],
-
-  "changes": {
-    "new_risks": [],
-    "increased_risks": [],
-    "reduced_risks": [],
-    "resolved_risks": [],
-    "new_growth_drivers": [],
-    "strategy_changes": [],
-    "auditor_changes": [],
-    "governance_changes": []
-  },
-
-  "good": [],
-
-  "bad": [],
-
-  "watch": [],
-
-  "red_flags": [],
-
-  "growth_drivers": [],
-
+  "business_summary": "",
+  "financial_summary": "",
+  "cash_flow_summary": "",
   "management_assessment": "",
-
   "governance_assessment": "",
-
   "auditor_assessment": "",
-
-  "cash_quality_assessment": "",
-
+  "risks": [],
+  "good": [],
+  "bad": [],
+  "watch": [],
   "investor_questions": [],
-
   "missing_information": []
 }
 
-For good, bad, watch, red_flags and growth_drivers use:
+Every item in risks, good, bad and watch should be:
 
 {
   "title": "",
@@ -4137,95 +2392,56 @@ For good, bad, watch, red_flags and growth_drivers use:
   "evidence": [],
   "priority": "High|Medium|Low"
 }
-
-Do not invent evidence.
-
 `;
 
-
-      /* ------------------------------------------------------
-         GEMINI RECEIVES TEXT ONLY
-         ------------------------------------------------------ */
-
-      const text =
-        await geminiGenerate(
-          [
-            {
-              text:
-                prompt
-            }
-          ],
+      const responseText = await geminiGenerate(
+        [
           {
-            json:
-              true
+            text: prompt
           }
-        );
-
+        ],
+        {
+          json: true
+        }
+      );
 
       const analysis =
-        safeJSON(
-          text
-        );
-
+        safeJSON(responseText);
 
       if (!analysis) {
-
         throw new Error(
-          "Gemini returned an unreadable annual-report analysis."
+          "Gemini returned unreadable analysis JSON."
         );
-
       }
 
-
       return res.json({
-
+        ok: true,
         analysis,
-
-        model:
-          GEMINI_MODEL,
-
-        provider:
-          "gemini",
-
-        pdfProcessing:
-          "local"
-
+        provider: "gemini",
+        model: GEMINI_MODEL,
+        pdfProcessing: "local"
       });
-
-    }
-
-    catch (error) {
-
+    } catch (error) {
       console.error(
-        "Annual Report AI:",
+        "Annual report AI error:",
         error
       );
 
-
       const status =
-        Number.isInteger(
-          error?.status
-        )
-          ? error.status
+        Number(error?.status) >= 400
+          ? Number(error.status)
           : 500;
 
-
-      return res
-        .status(status)
-        .json({
-
-          error:
-            error?.message ||
-            "Annual-report analysis failed."
-
-        });
-
+      return res.status(status).json({
+        ok: false,
+        error:
+          status === 429
+            ? "AI quota has been reached. Please try again later."
+            : "The annual report could not be analyzed."
+      });
     }
-
   }
 );
-
-
 
 /* ============================================================
    16. ASK FINSIGHT
@@ -4233,3220 +2449,111 @@ Do not invent evidence.
 
 app.post(
   "/api/ai/ask",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      const {
-
-        question,
-
-        company,
-
-        financials,
-
-        market,
-
-        valuation,
-
-        reportAnalysis,
-
-        pdfContext
-
-      } =
-        req.body || {};
-
-
-      if (
-        !question?.trim()
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Question is required."
-
-          });
-
-      }
-
-
-      if (!company) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Company evidence is required. Upload an annual report first."
-
-          });
-
-      }
-
-
-      /*
-       * Ask FinSight receives the structured annual-report
-       * extraction and qualitative report analysis.
-       *
-       * It does NOT use unsourced general knowledge as a
-       * substitute for missing report evidence.
-       */
-
-      const prompt = `
-
-Answer the investor's question about the loaded company.
-
-QUESTION:
-
-${question}
-
-
-============================================================
-COMPANY IDENTITY
-============================================================
-
-${JSON.stringify(
-  company || {},
-  null,
-  2
-)}
-
-
-============================================================
-EXTRACTED FINANCIAL HISTORY
-============================================================
-
-${JSON.stringify(
-  financials || [],
-  null,
-  2
-)}
-
-
-============================================================
-MARKET DATA
-============================================================
-
-${JSON.stringify(
-  market || null,
-  null,
-  2
-)}
-
-
-============================================================
-VALUATION
-============================================================
-
-${JSON.stringify(
-  valuation || null,
-  null,
-  2
-)}
-
-
-============================================================
-ANNUAL-REPORT AI ANALYSIS
-============================================================
-
-${JSON.stringify(
-  reportAnalysis || null,
-  null,
-  2
-)}
-
-
-============================================================
-LOCAL PDF EVIDENCE
-============================================================
-
-${JSON.stringify(
-  pdfContext || null,
-  null,
-  2
-)}
-
-
-============================================================
-ANSWER RULES
-============================================================
-
-Answer the actual question directly.
-
-You may answer questions about:
-
-- what the company does
-- how it makes money
-- products/services
-- segments
-- strategy
-- competitive position
-- revenue
-- profitability
-- cash flow
-- debt
-- working capital
-- management
-- governance
-- auditor
-- related parties
-- contingent liabilities
-- risks
-- growth drivers
-- capital allocation
-- listing status
-- market valuation
-- report disclosures
-- multi-year changes
-
-Use only the supplied FinSight company/report context.
-
-If the supplied evidence cannot support the answer,
-say:
-
-"Not established from the loaded annual-report evidence."
-
-Do not fill the gap with generic knowledge.
-
-Separate the answer into evidence categories where relevant:
-
-REPORTED FACT
-
-CALCULATED METRIC
-
-MANAGEMENT CLAIM
-
-AI INTERPRETATION
-
-Return valid JSON only:
-
-{
-  "answer": "",
-  "reported_facts": [],
-  "calculated_metrics": [],
-  "management_claims": [],
-  "ai_interpretation": [],
-  "evidence": [],
-  "risks": [],
-  "what_to_investigate_next": []
-}
-
-`;
-
-
-      const aiMetadata = {};
-
-      const text =
-        await aiGenerate(
-          [
-            {
-              text:
-                prompt
-            }
-          ],
-          {
-            json:
-              true,
-            metadata: aiMetadata
-          }
-        );
-
-
-      const answer =
-        safeJSON(text);
-
-
-      if (!answer) {
-
-        throw new Error(
-          "The AI provider returned an unreadable answer."
-        );
-
-      }
-
-
-      return res.json({
-
-        answer,
-
-        model: aiMetadata.model,
-
-        provider: aiMetadata.provider
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "Ask FinSight:",
-        error
-      );
-
-
-      return res
-        .status(aiErrorHttpStatus(error))
-        .json({
-
-          error:
-            error.message ||
-            "FinSight could not answer the question."
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   17. COMPETITOR ANNUAL-REPORT COMPARISON
-   ============================================================ */
-
-/*
- * Architecture:
- *
- * Company A PDF
- *      ↓
- * /api/ai/prepare-comparison-report
- *      ↓
- * compact JSON A
- *
- * Company B PDF
- *      ↓
- * /api/ai/prepare-comparison-report
- *      ↓
- * compact JSON B
- *
- * JSON A + JSON B
- *      ↓
- * /api/ai/compare
- *      ↓
- * final AI comparison
- *
- * IMPORTANT:
- * /api/ai/compare NEVER receives PDFs.
- */
-
-
-/* ============================================================
-   17A. PREPARE ONE REPORT
-   ============================================================ */
-
-app.post(
-  "/api/ai/prepare-comparison-report",
-
-  upload.single(
-    "report"
-  ),
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      const report =
-        req.file;
-
-
-      const label =
-        String(
-          req.body?.label ||
-          "Company"
-        ).trim();
-
-
-      if (!report) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Annual-report PDF is required."
-
-          });
-
-      }
-
-
-      if (
-        report.mimetype &&
-        report.mimetype !==
-          "application/pdf"
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Comparison currently requires an annual-report PDF."
-
-          });
-
-      }
-
-
-      console.log(
-        `Preparing comparison research for ${label}:`,
-        report.originalname,
-        `(${Math.round(
-          report.size /
-          1024 /
-          1024 *
-          10
-        ) / 10} MB)`
-      );
-
-
-      const prompt = `
-
-You are FinSight AI.
-
-Create a COMPACT, evidence-first investor profile from
-the attached annual report.
-
-This profile will later be compared with another company.
-
-LABEL:
-
-${label}
-
-
-============================================================
-SOURCE RULES
-============================================================
-
-1. The attached annual report is the source of truth.
-
-2. Prefer AUDITED CONSOLIDATED financial statements.
-
-3. Do not use standalone financial statements when
-   consolidated statements are available for group-level
-   investor analysis.
-
-4. Do not mix standalone and consolidated numbers.
-
-5. Preserve the actual financial year.
-
-6. Do not invent missing information.
-
-7. Do not guess ticker symbols, exchanges or market prices.
-
-8. Do not issue a personalized buy/sell recommendation.
-
-9. Keep explanations concise because this JSON will be sent
-   into a later comparison request.
-
-
-============================================================
-FINANCIAL UNIT RULE — CRITICAL
-============================================================
-
-Read the unit printed on the audited financial statements.
-
-Normalize monetary financial-statement values to:
-
-₹ CRORE
-
-Conversions:
-
-If source is INR / ₹ million:
-
-value in crore =
-value in million ÷ 10
-
-
-If source is INR / ₹ billion:
-
-value in crore =
-value in billion × 100
-
-
-If source is INR / ₹ crore:
-
-leave unchanged.
-
-
-Example:
-
-166,762 INR million
-
-=
-
-₹16,676.2 crore
-
-
-Never treat:
-
-166.7 billion
-
-as:
-
-₹166.7 crore.
-
-
-============================================================
-FINANCIAL SOURCE PRIORITY
-============================================================
-
-First locate:
-
-- Consolidated Balance Sheet
-- Consolidated Statement of Profit and Loss
-- Consolidated Cash Flow Statement
-
-Use their audited numbers where available.
-
-Do NOT substitute:
-
-- Year in Review
-- highlights
-- investor presentation KPIs
-- pre-sales
-- bookings
-- adjusted PAT
-- adjusted EBITDA
-
-for audited consolidated financial-statement values.
-
-An explicitly disclosed adjusted/non-GAAP metric may be
-mentioned qualitatively, but identify it as adjusted.
-
-
-============================================================
-FINANCIAL ANALYSIS
-============================================================
-
-Where reliably available extract:
-
-- revenue
-- revenue growth
-- EBITDA
-- EBITDA margin
-- operating profit
-- net profit
-- net margin
-- operating cash flow
-- free cash flow
-- total assets
-- total equity
-- total debt
-- cash
-- net debt
-- debt/equity
-- current assets
-- current liabilities
-- current ratio
-- receivables
-- inventory
-- finance cost
-- ROE
-- ROCE
-
-Return null for unsupported figures.
-
-Never use zero to mean missing information.
-
-
-============================================================
-QUALITATIVE ANALYSIS
-============================================================
-
-Analyze concisely:
-
-BUSINESS
-
-- business model
-- major operating segments
-- revenue drivers
-- competitive strengths
-- growth drivers
-
-CASH QUALITY
-
-- operating cash generation
-- profit-to-cash conversion
-- important cash-flow concerns
-
-BALANCE SHEET
-
-- leverage
-- liquidity
-- debt
-- financial flexibility
-
-MANAGEMENT
-
-- strategy
-- execution
-- capital allocation
-
-GOVERNANCE
-
-- governance observations
-- related-party issues where relevant
-
-AUDITOR
-
-- audit opinion
-- qualifications
-- key audit matters
-
-RISKS
-
-- business
-- regulatory
-- leverage
-- execution
-- concentration
-- litigation
-- governance
-- other material risks
-
-
-============================================================
-OUTPUT
-============================================================
-
-Return VALID JSON ONLY.
-
-Use exactly this structure:
-
-{
-  "company": {
-    "name": "",
-    "financial_year": "",
-    "statement_basis": "",
-    "original_unit": "",
-    "normalized_unit": "₹ crore"
-  },
-
-  "financials": {
-    "revenue": null,
-    "revenue_growth": null,
-
-    "ebitda": null,
-    "ebitda_margin": null,
-
-    "operating_profit": null,
-
-    "net_profit": null,
-    "net_margin": null,
-
-    "operating_cash_flow": null,
-    "cash_conversion": null,
-
-    "free_cash_flow": null,
-
-    "total_assets": null,
-    "total_equity": null,
-
-    "total_debt": null,
-    "cash": null,
-    "net_debt": null,
-
-    "debt_equity": null,
-
-    "current_assets": null,
-    "current_liabilities": null,
-    "current_ratio": null,
-
-    "receivables": null,
-    "inventory": null,
-
-    "finance_cost": null,
-
-    "roe": null,
-    "roce": null
-  },
-
-  "business": {
-    "business_model": "",
-    "major_segments": [],
-    "competitive_strengths": [],
-    "growth_drivers": []
-  },
-
-  "cash_quality": "",
-
-  "balance_sheet_assessment": "",
-
-  "management": {
-    "strategy": "",
-    "capital_allocation": "",
-    "execution": ""
-  },
-
-  "governance": {
-    "assessment": "",
-    "important_observations": []
-  },
-
-  "auditor": {
-    "opinion": "",
-    "key_audit_matters": [],
-    "qualifications": []
-  },
-
-  "risks": [],
-
-  "strengths": [],
-
-  "weaknesses": [],
-
-  "investor_questions": [],
-
-  "confidence": "High|Medium|Low"
-}
-
-`;
-
-
-      const aiMetadata = {};
-
-      const resultText = await aiGenerateWithPdf(report, prompt, {
-        json: true,
-        metadata: aiMetadata
-      });
-
-
-      const research =
-        safeJSON(
-          resultText
-        );
-
-
-      if (
-        !research ||
-        typeof research !==
-          "object" ||
-        Array.isArray(
-          research
-        )
-      ) {
-
-        throw new Error(
-          "The AI provider returned unusable structured comparison data."
-        );
-
-      }
-
-
-      /*
-       * Ensure predictable structure.
-       */
-
-      research.company =
-        research.company ||
-        {};
-
-
-      research.financials =
-        research.financials ||
-        {};
-
-
-      research.business =
-        research.business ||
-        {};
-
-
-      research.management =
-        research.management ||
-        {};
-
-
-      research.governance =
-        research.governance ||
-        {};
-
-
-      research.auditor =
-        research.auditor ||
-        {};
-
-
-      research.risks =
-        Array.isArray(
-          research.risks
-        )
-          ? research.risks
-          : [];
-
-
-      research.strengths =
-        Array.isArray(
-          research.strengths
-        )
-          ? research.strengths
-          : [];
-
-
-      research.weaknesses =
-        Array.isArray(
-          research.weaknesses
-        )
-          ? research.weaknesses
-          : [];
-
-
-      research.investor_questions =
-        Array.isArray(
-          research.investor_questions
-        )
-          ? research.investor_questions
-          : [];
-
-
-      console.log(
-        `${label} comparison research ready:`,
-        research.company?.name ||
-        report.originalname
-      );
-
-
-      return res.json({
-
-        ok:
-          true,
-
-        label,
-
-        fileName:
-          report.originalname,
-
-        research,
-
-        model: aiMetadata.model,
-
-        provider: aiMetadata.provider
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "Prepare comparison report:",
-        error
-      );
-
-
-      const status = aiErrorHttpStatus(error);
-
-
-      return res
-        .status(status)
-        .json({
-
-          ok:
-            false,
-
-          error:
-            error?.message ||
-            "Could not prepare annual report for comparison.",
-
-          providerStatus:
-            error?.providerStatus ||
-            null
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   17B. COMPARE PREPARED COMPANY PROFILES
-   ============================================================ */
-
-app.post(
-  "/api/ai/compare",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      const companyA =
-        req.body?.companyA;
-
-
-      const companyB =
-        req.body?.companyB;
-
-
-      if (
-        !companyA ||
-        typeof companyA !==
-          "object"
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Prepared Company A research is required."
-
-          });
-
-      }
-
-
-      if (
-        !companyB ||
-        typeof companyB !==
-          "object"
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Prepared Company B research is required."
-
-          });
-
-      }
-
-
-      /*
-       * This route must remain lightweight.
-       *
-       * If PDFs accidentally reach this route,
-       * something is wrong in the frontend.
-       */
-
-      const serializedA =
-        JSON.stringify(
-          companyA
-        );
-
-
-      const serializedB =
-        JSON.stringify(
-          companyB
-        );
-
-
-      const MAX_PROFILE_SIZE =
-        250000;
-
-
-      if (
-        serializedA.length >
-          MAX_PROFILE_SIZE ||
-        serializedB.length >
-          MAX_PROFILE_SIZE
-      ) {
-
-        return res
-          .status(413)
-          .json({
-
-            ok:
-              false,
-
-            error:
-              "Prepared company research is unexpectedly large. Re-process the annual reports before comparing them."
-
-          });
-
-      }
-
-
-      const companyAName =
-
-        companyA
-          ?.company
-          ?.name
-
-        ||
-
-        "Company A";
-
-
-      const companyBName =
-
-        companyB
-          ?.company
-          ?.name
-
-        ||
-
-        "Company B";
-
-
-      console.log(
-        "Lightweight comparison started:",
-        companyAName,
-        "vs",
-        companyBName
-      );
-
-
-      const prompt = `
-
-You are FinSight AI.
-
-Compare two companies using ONLY the structured annual-report
-research supplied below.
-
-Do not invent missing information.
-
-Do not supplement the supplied evidence with unsourced general
-knowledge.
-
-Do not automatically declare one company the winner.
-
-Do not provide personalized buy/sell advice.
-
-Your job is to explain the INVESTOR TRADE-OFFS.
-
-
-============================================================
-COMPANY A
-============================================================
-
-${JSON.stringify(
-  companyA,
-  null,
-  2
-)}
-
-
-============================================================
-COMPANY B
-============================================================
-
-${JSON.stringify(
-  companyB,
-  null,
-  2
-)}
-
-
-============================================================
-COMPARISON FRAMEWORK
-============================================================
-
-Compare the companies on:
-
-1. Business model and business quality
-
-2. Growth
-
-3. Revenue durability
-
-4. Profitability
-
-5. EBITDA and operating margins
-
-6. Operating cash generation
-
-7. Earnings quality
-
-8. Working capital
-
-9. Balance-sheet strength
-
-10. Debt and leverage
-
-11. Liquidity
-
-12. ROE / ROCE where supported
-
-13. Capital allocation
-
-14. Management strategy
-
-15. Management execution
-
-16. Governance
-
-17. Auditor observations
-
-18. Key audit matters
-
-19. Major risks
-
-20. Growth opportunities
-
-
-============================================================
-EDGE RULE
-============================================================
-
-For each category, edge must be one of:
-
-"Company A"
-"Company B"
-"Mixed"
-"Similar"
-"Insufficient evidence"
-
-
-Do not award an edge merely because one company has more
-disclosure.
-
-Do not treat missing information as a negative financial
-result.
-
-Do not treat null as zero.
-
-
-============================================================
-VALUATION
-============================================================
-
-These profiles are primarily annual-report based.
-
-If neither profile contains sufficient public-market valuation
-evidence, state:
-
-"Insufficient evidence"
-
-Do not invent market prices or valuation multiples.
-
-
-============================================================
-OUTPUT
-============================================================
-
-Return VALID JSON ONLY.
-
-Use exactly:
-
-{
-  "company_a": "",
-  "company_b": "",
-
-  "summary": "",
-
-  "business_quality": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "growth": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "profitability": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "cash_generation": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "balance_sheet": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "capital_allocation": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "management": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "governance": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "auditor": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "risk": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "valuation": {
-    "company_a": "",
-    "company_b": "",
-    "edge": "Company A|Company B|Mixed|Similar|Insufficient evidence"
-  },
-
-  "company_a_strengths": [],
-
-  "company_a_weaknesses": [],
-
-  "company_b_strengths": [],
-
-  "company_b_weaknesses": [],
-
-  "important_tradeoffs": [],
-
-  "questions_before_choosing_a": [],
-
-  "questions_before_choosing_b": [],
-
-  "overall_interpretation": ""
-}
-
-`;
-
-
-      /*
-       * IMPORTANT:
-       *
-       * Only text/JSON goes to the AI provider router here.
-       * No PDF is included.
-       */
-
-      const aiMetadata = {};
-
-      const comparisonText =
-        await aiGenerate(
-          [
-            {
-              text:
-                prompt
-            }
-          ],
-          {
-            json:
-              true,
-            metadata: aiMetadata
-          }
-        );
-
-
-      const comparison =
-        safeJSON(
-          comparisonText
-        );
-
-
-      if (
-        !comparison ||
-        typeof comparison !==
-          "object" ||
-        Array.isArray(
-          comparison
-        )
-      ) {
-
-        throw new Error(
-          "The AI provider returned an unusable company comparison."
-        );
-
-      }
-
-
-      /*
-       * Defensive company names.
-       */
-
-      if (
-        !comparison.company_a
-      ) {
-
-        comparison.company_a =
-          companyAName;
-
-      }
-
-
-      if (
-        !comparison.company_b
-      ) {
-
-        comparison.company_b =
-          companyBName;
-
-      }
-
-
-      console.log(
-        "Lightweight comparison complete:",
-        comparison.company_a,
-        "vs",
-        comparison.company_b
-      );
-
-
-      return res.json({
-
-        ok:
-          true,
-
-        comparison,
-
-        model: aiMetadata.model,
-
-        provider: aiMetadata.provider
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "Lightweight comparison failed:",
-        error
-      );
-
-
-      const status = aiErrorHttpStatus(error);
-
-
-      return res
-        .status(status)
-        .json({
-
-          ok:
-            false,
-
-          error:
-            error?.message ||
-            "Company comparison failed.",
-
-          providerStatus:
-            error?.providerStatus ||
-            null
-
-        });
-
-    }
-
-  }
-);
-/* ============================================================
-   18. ALPHA VANTAGE MARKET QUOTE
-   ONE API REQUEST PER BUTTON PRESS
-   ============================================================ */
-
-app.get(
-  "/api/market/:identifier",
-
   async (req, res) => {
-
     try {
-
-      if (!ALPHA_VANTAGE_API_KEY) {
-
-        return res
-          .status(503)
-          .json({
-            ok: false,
-            error:
-              "Alpha Vantage API key is not configured."
-          });
-
-      }
-
-
-      const identifier =
-        String(
-          req.params.identifier || ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const ticker =
-        String(
-          req.query.ticker || ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const nseCode =
-        String(
-          req.query.nseCode || ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const bseCode =
-        String(
-          req.query.bseCode || ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const exchange =
-        String(
-          req.query.exchange || ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const companyName =
-        String(
-          req.query.company || ""
-        ).trim();
-
-
-      /*
-       * ------------------------------------------------------
-       * RESOLVE ONE SYMBOL
-       * ------------------------------------------------------
-       *
-       * IMPORTANT:
-       *
-       * We deliberately make ONE Alpha Vantage request.
-       *
-       * No SYMBOL_SEARCH.
-       * No retry with several symbols.
-       * No automatic second API request.
-       */
-
-
-      let symbol =
-        null;
-
-
-      let identifierSource =
-        null;
-
-
-      /*
-       * BSE security code is preferred because
-       * Alpha Vantage supports global exchange
-       * suffix notation.
-       */
-
-      if (bseCode) {
-
-        symbol =
-          bseCode.endsWith(".BSE")
-
-            ? bseCode
-
-            : `${bseCode}.BSE`;
-
-
-        identifierSource =
-          "BSE security code";
-
-      }
-
-
-      /*
-       * Otherwise use the verified ticker.
-       */
-
-      else if (ticker) {
-
-        if (
-          exchange === "BSE" &&
-          !ticker.endsWith(".BSE")
-        ) {
-
-          symbol =
-            `${ticker}.BSE`;
-
-        }
-
-        else {
-
-          symbol =
-            ticker;
-
-        }
-
-
-        identifierSource =
-          "verified ticker";
-
-      }
-
-
-      /*
-       * NSE code fallback.
-       *
-       * We do NOT invent an exchange suffix here.
-       */
-
-      else if (nseCode) {
-
-        symbol =
-          nseCode;
-
-
-        identifierSource =
-          "NSE code";
-
-      }
-
-
-      /*
-       * Final fallback is the route identifier
-       * already supplied by the frontend.
-       */
-
-      else if (identifier) {
-
-        symbol =
-          identifier;
-
-
-        identifierSource =
-          "market identifier";
-
-      }
-
-
-      if (!symbol) {
-
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            error:
-              "No verified market identifier is available."
-          });
-
-      }
-
-
-      console.log(
-        "Alpha Vantage quote request:",
-        {
-          company:
-            companyName,
-
-          symbol,
-
-          identifierSource
-        }
-      );
-
-
-      /*
-       * ------------------------------------------------------
-       * EXACTLY ONE ALPHA VANTAGE REQUEST
-       * ------------------------------------------------------
-       */
-
-      const url =
-        new URL(
-          "https://www.alphavantage.co/query"
-        );
-
-
-      url.searchParams.set(
-        "function",
-        "GLOBAL_QUOTE"
-      );
-
-
-      url.searchParams.set(
-        "symbol",
-        symbol
-      );
-
-
-      url.searchParams.set(
-        "apikey",
-        ALPHA_VANTAGE_API_KEY
-      );
-
-
-      const response =
-        await fetch(
-          url
-        );
-
-
-      const data =
-        await response.json();
-
-
-      /*
-       * Alpha Vantage often returns HTTP 200
-       * even when its own API limit is reached.
-       */
-
-      if (
-        data.Note ||
-        data.Information
-      ) {
-
-        const providerMessage =
-          data.Note ||
-          data.Information;
-
-
-        console.warn(
-          "Alpha Vantage provider message:",
-          providerMessage
-        );
-
-
-        return res
-          .status(429)
-          .json({
-            ok: false,
-
-            error:
-              providerMessage,
-
-            provider:
-              "Alpha Vantage",
-
-            symbol,
-
-            identifierSource
-          });
-
-      }
-
-
-      if (
-        data["Error Message"]
-      ) {
-
-        return res
-          .status(404)
-          .json({
-            ok: false,
-
-            error:
-              data["Error Message"],
-
-            provider:
-              "Alpha Vantage",
-
-            symbol,
-
-            identifierSource
-          });
-
-      }
-
-
-      const quote =
-        data["Global Quote"] ||
-        {};
-
-
-      const price =
-        Number(
-          quote["05. price"]
-        );
-
-
-      if (
-        !Number.isFinite(price) ||
-        price <= 0
-      ) {
-
-        return res
-          .status(404)
-          .json({
-            ok: false,
-
-            error:
-              `Alpha Vantage returned no usable price for ${symbol}.`,
-
-            provider:
-              "Alpha Vantage",
-
-            symbol,
-
-            identifierSource
-          });
-
-      }
-
-
-      function numberValue(key) {
-
-        const value =
-          Number(
-            quote[key]
-          );
-
-
-        return Number.isFinite(value)
-
-          ? value
-
-          : null;
-
-      }
-
-
-      /*
-       * Currency inference.
-       */
-
-      let currency =
-        null;
-
-
-      if (
-        exchange === "NSE" ||
-        exchange === "BSE" ||
-        symbol.endsWith(".BSE")
-      ) {
-
-        currency =
-          "INR";
-
-      }
-
-
-      else if (
-        [
-          "NASDAQ",
-          "NYSE",
-          "AMEX"
-        ].includes(exchange)
-      ) {
-
-        currency =
-          "USD";
-
-      }
-
-
-      console.log(
-        "Alpha Vantage quote successful:",
-        symbol,
-        price
-      );
-
-
-      return res.json({
-
-        ok:
-          true,
-
-        provider:
-          "Alpha Vantage",
-
-        identifierSource,
-
-        requestedIdentifier:
-          identifier,
-
-        symbol,
-
-        ticker:
-          ticker || null,
-
-        nseCode:
-          nseCode || null,
-
-        bseCode:
-          bseCode || null,
-
-        companyName:
-          companyName || null,
-
-        exchange:
-          exchange || null,
-
-        currency,
-
-        price,
-
-        open:
-          numberValue(
-            "02. open"
-          ),
-
-        high:
-          numberValue(
-            "03. high"
-          ),
-
-        low:
-          numberValue(
-            "04. low"
-          ),
-
-        volume:
-          numberValue(
-            "06. volume"
-          ),
-
-        asOf:
-          quote[
-            "07. latest trading day"
-          ] || null,
-
-        previousClose:
-          numberValue(
-            "08. previous close"
-          ),
-
-        change:
-          numberValue(
-            "09. change"
-          ),
-
-        changePercent:
-          quote[
-            "10. change percent"
-          ] || null,
-
-        live:
-          false,
-
-        freshness:
-          "last available / end-of-day"
-
-      });
-
-    }
-
-    catch (error) {
-
-      console.error(
-        "Alpha Vantage market error:",
-        error
-      );
-
-
-      return res
-        .status(503)
-        .json({
-          ok: false,
-
-          error:
-            error?.message ||
-            "Alpha Vantage market-price lookup failed."
-        });
-
-    }
-
-  }
-);
-/* ============================================================
-   19. HISTORICAL MARKET DATA
-   ============================================================ */
-
-app.get(
-  "/api/market-history/:ticker",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      if (
-        !ALPHA_VANTAGE_API_KEY
-      ) {
-
-        throw new Error(
-          "Alpha Vantage is not configured."
-        );
-
-      }
-
-
-      const ticker =
-        String(
-          req.params.ticker ||
-          ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const exchange =
-        String(
-          req.query.exchange ||
-          ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const symbol =
-
-        exchange === "BSE" &&
-        !ticker.endsWith(
-          ".BSE"
-        )
-
-          ? `${ticker}.BSE`
-
-          : ticker;
-
-
-      const url =
-        new URL(
-          "https://www.alphavantage.co/query"
-        );
-
-
-      url.searchParams.set(
-        "function",
-        "TIME_SERIES_DAILY"
-      );
-
-
-      url.searchParams.set(
-        "symbol",
-        symbol
-      );
-
-
-      url.searchParams.set(
-        "outputsize",
-        "compact"
-      );
-
-
-      url.searchParams.set(
-        "apikey",
-        ALPHA_VANTAGE_API_KEY
-      );
-
-
-      const data =
-        await fetchJSON(url);
-
-
-      const series =
-        data[
-          "Time Series (Daily)"
-        ];
-
-
-      if (!series) {
-
-        throw new Error(
-
-          data.Note
-
-          ||
-
-          data.Information
-
-          ||
-
-          "Historical market data unavailable."
-
-        );
-
-      }
-
-
-      const rows =
-
-        Object.entries(
-          series
-        )
-
-          .map(
-            (
-              [
-                date,
-                values
-              ]
-            ) => ({
-
-              date,
-
-              open:
-                Number(
-                  values[
-                    "1. open"
-                  ]
-                ),
-
-              high:
-                Number(
-                  values[
-                    "2. high"
-                  ]
-                ),
-
-              low:
-                Number(
-                  values[
-                    "3. low"
-                  ]
-                ),
-
-              close:
-                Number(
-                  values[
-                    "4. close"
-                  ]
-                ),
-
-              volume:
-                Number(
-                  values[
-                    "5. volume"
-                  ]
-                )
-
-            })
-          )
-
-          .filter(
-            row =>
-              Number.isFinite(
-                row.close
-              )
-          )
-
-          .sort(
-            (a, b) =>
-              a.date.localeCompare(
-                b.date
-              )
-          );
-
-
-      return res.json({
-
-        ticker,
-
-        exchange,
-
-        provider:
-          "Alpha Vantage",
-
-        live:
-          false,
-
-        rows
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      return res
-        .status(503)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   20. AI VALUATION
-   ============================================================ */
-
-app.post(
-  "/api/ai/valuation",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
       const {
-
+        question,
         company,
-
-        market,
-
-        fundamentals,
-
-        valuation,
-
-        reportAnalysis
-
-      } =
-        req.body || {};
-
+        financials,
+        reportAnalysis,
+        pdfContext
+      } = req.body || {};
 
       if (
-        !market?.price
+        !question ||
+        !String(question).trim()
       ) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Verified market price is required for public-market valuation."
-
-          });
-
+        return res.status(400).json({
+          ok: false,
+          error: "A question is required."
+        });
       }
-
 
       const prompt = `
+You are FinSight AI, an evidence-first
+annual-report research assistant.
 
-Interpret the following company valuation for an investor.
+Answer only from the supplied financial data
+and annual-report evidence.
 
-Do not invent missing values.
+Never invent financial values.
+If the evidence does not support an answer,
+say that the information is unavailable.
+
+Do not provide personalized buy or sell advice.
 
 COMPANY:
+${JSON.stringify(company || {}, null, 2)}
 
-${JSON.stringify(
-  company || {},
-  null,
-  2
-)}
+FINANCIAL DATA:
+${JSON.stringify(financials || [], null, 2)}
 
-MARKET:
+REPORT ANALYSIS:
+${JSON.stringify(reportAnalysis || {}, null, 2)}
 
-${JSON.stringify(
-  market || {},
-  null,
-  2
-)}
+REPORT EVIDENCE:
+${String(pdfContext || "").slice(0, 300000)}
 
-FINANCIAL HISTORY:
-
-${JSON.stringify(
-  fundamentals || [],
-  null,
-  2
-)}
-
-VALUATION METRICS:
-
-${JSON.stringify(
-  valuation || {},
-  null,
-  2
-)}
-
-ANNUAL REPORT ANALYSIS:
-
-${JSON.stringify(
-  reportAnalysis || null,
-  null,
-  2
-)}
-
-STRICT GROUNDING RULES:
-
-- Treat FINANCIAL HISTORY and VALUATION METRICS as authoritative structured inputs.
-- Do not recalculate a supplied metric and do not substitute a different definition.
-- A reported fact must come directly from FINANCIAL HISTORY or ANNUAL REPORT ANALYSIS.
-- A calculated metric must come directly from VALUATION METRICS.
-- Never call earnings quality strong merely because margins or earnings growth are strong.
-  Earnings quality must be assessed primarily from cash conversion, operating cash flow,
-  free cash flow and working-capital evidence.
-- If operating cash flow or free cash flow is weak relative to profit, explicitly describe
-  earnings cash conversion as weak/mixed even when accounting profit is growing.
-- Do not describe a manual share price as a verified/live market quote.
-- Do not infer sector norms, cyclicality, project pipelines or industry facts unless they
-  are present in the supplied annual-report analysis.
-- Preserve the distinction between reported EBITDA and adjusted/non-GAAP EBITDA.
-- If a metric is unavailable, say it is unavailable rather than estimating it.
-
-Assess:
-
-- business quality
-- earnings quality
-- balance-sheet quality
-- valuation multiples
-- earnings yield
-- free-cash-flow yield where available
-- leverage
-- what expectations may already be priced in
-- what assumptions could invalidate the conclusion
-
-You may use:
-
-Attractive
-Fair
-Premium
-Expensive
-
-only as evidence-supported valuation descriptions.
-
-Do not issue a personalized buy/sell recommendation.
+USER QUESTION:
+${String(question).trim()}
 
 Return valid JSON only:
 
 {
   "answer": "",
-  "reported_facts": [],
-  "calculated_metrics": [],
-  "management_claims": [],
-  "ai_interpretation": [],
   "evidence": [],
-  "risks": [],
-  "what_to_investigate_next": []
+  "calculation": null,
+  "confidence": "High|Medium|Low",
+  "missing_information": []
 }
-
 `;
 
-
-      const aiMetadata = {};
-
-      const text =
-        await aiGenerate(
-          [
-            {
-              text:
-                prompt
-            }
-          ],
+      const responseText = await geminiGenerate(
+        [
           {
-            json:
-              true,
-            metadata: aiMetadata
+            text: prompt
           }
-        );
+        ],
+        {
+          json: true
+        }
+      );
 
+      const answer =
+        safeJSON(responseText);
 
-      const assessment =
-        safeJSON(text);
-
-
-      if (!assessment) {
-
+      if (!answer) {
         throw new Error(
-          "The AI provider returned an unreadable valuation assessment."
+          "Gemini returned unreadable answer JSON."
         );
-
       }
-
 
       return res.json({
-
-        assessment,
-
-        model: aiMetadata.model,
-
-        provider: aiMetadata.provider
-
+        ok: true,
+        answer,
+        provider: "gemini",
+        model: GEMINI_MODEL
       });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "AI valuation:",
-        error
-      );
-
-
-      return res
-        .status(aiErrorHttpStatus(error))
-        .json({
-
-          error:
-            error.message ||
-            "Valuation interpretation failed."
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   21. DCF
-   ============================================================ */
-
-app.post(
-  "/api/valuation/dcf",
-
-  (
-    req,
-    res
-  ) => {
-
-    try {
-
-      const result =
-        runDCF(
-          req.body || {}
-        );
-
-
-      return res.json(
-        result
-      );
-
-    }
-
-    catch (
-      error
-    ) {
-
-      return res
-        .status(400)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   22. REVERSE DCF
-   ============================================================ */
-
-app.post(
-  "/api/valuation/reverse-dcf",
-
-  (
-    req,
-    res
-  ) => {
-
-    try {
-
-      const result =
-        reverseDCF(
-          req.body || {}
-        );
-
-
-      return res.json(
-        result
-      );
-
-    }
-
-    catch (
-      error
-    ) {
-
-      return res
-        .status(400)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   23. SAVE THESIS
-   ============================================================ */
-
-app.post(
-  "/api/thesis",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      if (!pool) {
-
-        return res
-          .status(503)
-          .json({
-
-            error:
-              "Research memory database is not configured."
-
-          });
-
-      }
-
-
-      await ensureResearchTables();
-
-
-      const {
-
-        company,
-
-        ticker,
-
-        exchange,
-
-        thesis,
-
-        bullCase,
-
-        bearCase,
-
-        thesisBreakers = []
-
-      } =
-        req.body || {};
-
-
-      if (
-        !company
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Company is required."
-
-          });
-
-      }
-
-
-      if (
-        !thesis?.trim()
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Investment thesis is required."
-
-          });
-
-      }
-
-
-      const companyRow =
-        await upsertCompany({
-
-          name:
-            company,
-
-          ticker,
-
-          exchange
-
-        });
-
-
-      const result =
-        await dbQuery(
-          `
-          INSERT INTO research_theses
-          (
-            company_id,
-            thesis,
-            bull_case,
-            bear_case,
-            thesis_breakers
-          )
-
-          VALUES
-          (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5
-          )
-
-          RETURNING *
-          `,
-          [
-            String(companyRow.id),
-
-            thesis,
-
-            bullCase ||
-            null,
-
-            bearCase ||
-            null,
-
-            thesisBreakers
-          ]
-        );
-
-
-      return res.json({
-
-        company:
-          companyRow,
-
-        thesis:
-          result.rows[0]
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "Save thesis:",
-        error
-      );
-
-
-      return res
-        .status(500)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   24. LOAD RESEARCH MEMORY
-   ============================================================ */
-
-app.get(
-  "/api/research",
-  async (req, res) => {
-    try {
-      if (!pool) return res.status(503).json({ error: "Research memory database is not configured." });
-      await ensureResearchTables();
-
-      const ticker = String(req.query.ticker || "").trim().toUpperCase();
-      const exchange = String(req.query.exchange || "").trim().toUpperCase();
-      const companyName = String(req.query.company || "").trim();
-      if (!ticker && !companyName) return res.status(400).json({ error: "Company name or ticker is required." });
-
-      let companyResult;
-      if (ticker) {
-        companyResult = await dbQuery(
-          `SELECT * FROM companies WHERE ticker = $1 AND ($2 = '' OR exchange = $2) ORDER BY updated_at DESC LIMIT 1`,
-          [ticker, exchange]
-        );
-      }
-      if ((!companyResult || !companyResult.rows[0]) && companyName) {
-        companyResult = await dbQuery(
-          `SELECT * FROM companies WHERE LOWER(name) = LOWER($1) ORDER BY updated_at DESC LIMIT 1`,
-          [companyName]
-        );
-      }
-
-      const company = companyResult?.rows?.[0];
-      if (!company) return res.status(404).json({ error: "Company not found in FinSight research memory." });
-
-      const [reports, theses, valuations, promises, events] = await Promise.all([
-        dbQuery(`SELECT * FROM reports WHERE company_id = $1 ORDER BY created_at DESC LIMIT 20`, [company.id]),
-        dbQuery(`SELECT * FROM research_theses WHERE company_id = $1 ORDER BY updated_at DESC LIMIT 20`, [String(company.id)]),
-        dbQuery(`SELECT * FROM valuation_snapshots WHERE company_id = $1 ORDER BY created_at DESC LIMIT 20`, [company.id]),
-        dbQuery(`SELECT * FROM management_promises WHERE company_id = $1 ORDER BY updated_at DESC LIMIT 50`, [company.id]),
-        dbQuery(`SELECT * FROM monitoring_events WHERE company_id = $1 ORDER BY created_at DESC LIMIT 100`, [company.id])
-      ]);
-
-      return res.json({ company, reports: reports.rows, theses: theses.rows, valuations: valuations.rows, promises: promises.rows, events: events.rows });
     } catch (error) {
-      console.error("Research memory:", error);
-      return res.status(500).json({ error: error.message });
-    }
-  }
-);
-
-
-app.get(
-  "/api/research/:ticker",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      if (!pool) {
-
-        return res
-          .status(503)
-          .json({
-
-            error:
-              "Research memory database is not configured."
-
-          });
-
-      }
-
-
-      await ensureResearchTables();
-
-
-      const ticker =
-        String(
-          req.params.ticker ||
-          ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const exchange =
-        String(
-          req.query.exchange ||
-          ""
-        )
-          .trim()
-          .toUpperCase();
-
-
-      const companyResult =
-        await dbQuery(
-          `
-          SELECT *
-          FROM companies
-
-          WHERE ticker = $1
-
-          AND (
-            $2 = ''
-            OR exchange = $2
-          )
-
-          ORDER BY updated_at DESC
-
-          LIMIT 1
-          `,
-          [
-            ticker,
-            exchange
-          ]
-        );
-
-
-      const company =
-        companyResult.rows[0];
-
-
-      if (!company) {
-
-        return res
-          .status(404)
-          .json({
-
-            error:
-              "Company not found in FinSight research memory."
-
-          });
-
-      }
-
-
-      const [
-
-        reports,
-
-        theses,
-
-        valuations,
-
-        promises,
-
-        events
-
-      ] =
-        await Promise.all(
-          [
-
-            dbQuery(
-              `
-              SELECT *
-              FROM reports
-              WHERE company_id = $1
-              ORDER BY created_at DESC
-              LIMIT 20
-              `,
-              [
-                company.id
-              ]
-            ),
-
-            dbQuery(
-              `
-              SELECT *
-              FROM research_theses
-              WHERE company_id = $1
-              ORDER BY updated_at DESC
-              LIMIT 20
-              `,
-              [
-                company.id
-              ]
-            ),
-
-            dbQuery(
-              `
-              SELECT *
-              FROM valuation_snapshots
-              WHERE company_id = $1
-              ORDER BY created_at DESC
-              LIMIT 20
-              `,
-              [
-                company.id
-              ]
-            ),
-
-            dbQuery(
-              `
-              SELECT *
-              FROM management_promises
-              WHERE company_id = $1
-              ORDER BY updated_at DESC
-              LIMIT 50
-              `,
-              [
-                company.id
-              ]
-            ),
-
-            dbQuery(
-              `
-              SELECT *
-              FROM monitoring_events
-              WHERE company_id = $1
-              ORDER BY created_at DESC
-              LIMIT 100
-              `,
-              [
-                company.id
-              ]
-            )
-
-          ]
-        );
-
-
-      return res.json({
-
-        company,
-
-        reports:
-          reports.rows,
-
-        theses:
-          theses.rows,
-
-        valuations:
-          valuations.rows,
-
-        promises:
-          promises.rows,
-
-        events:
-          events.rows
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
       console.error(
-        "Research memory:",
+        "Ask FinSight error:",
         error
       );
 
-
-      return res
-        .status(500)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   25. SAVE VALUATION SNAPSHOT
-   ============================================================ */
-
-app.post(
-  "/api/valuation/snapshot",
-
-  async (
-    req,
-    res
-  ) => {
-
-    try {
-
-      if (!pool) {
-
-        return res
-          .status(503)
-          .json({
-
-            error:
-              "Research memory database is not configured."
-
-          });
-
-      }
-
-
-      const {
-
-        company,
-
-        ticker,
-
-        exchange,
-
-        market = {},
-
-        fundamentals = {},
-
-        valuation = {},
-
-        aiAssessment = null
-
-      } =
-        req.body || {};
-
-
-      const companyRow =
-        await upsertCompany({
-
-          name:
-            company ||
-            ticker ||
-            "Unknown company",
-
-          ticker,
-
-          exchange
-
-        });
-
-
-      const result =
-        await dbQuery(
-          `
-          INSERT INTO valuation_snapshots
-          (
-            company_id,
-            market,
-            fundamentals,
-            valuation,
-            ai_assessment
-          )
-
-          VALUES
-          (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5
-          )
-
-          RETURNING *
-          `,
-          [
-            companyRow.id,
-
-            market,
-
-            fundamentals,
-
-            valuation,
-
-            aiAssessment
-          ]
-        );
-
-
-      return res.json({
-
-        company:
-          companyRow,
-
-        snapshot:
-          result.rows[0]
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      console.error(
-        "Valuation snapshot:",
-        error
-      );
-
-
-      return res
-        .status(500)
-        .json({
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   26. DATABASE STATUS
-   ============================================================ */
-
-app.get(
-  "/api/database/status",
-
-  async (
-    req,
-    res
-  ) => {
-
-    if (!pool) {
-
-      return res.json({
-
-        ok:
-          true,
-
-        configured:
-          false,
-
-        message:
-          "Database-backed research memory is inactive."
-
-      });
-
-    }
-
-
-    try {
-
-      const result =
-        await dbQuery(
-          "SELECT NOW() AS server_time"
-        );
-
-
-      return res.json({
-
-        ok:
-          true,
-
-        configured:
-          true,
-
-        connected:
-          true,
-
-        serverTime:
-          result.rows[0]
-            .server_time
-
-      });
-
-    }
-
-    catch (
-      error
-    ) {
-
-      return res
-        .status(500)
-        .json({
-
-          ok:
-            false,
-
-          configured:
-            true,
-
-          connected:
-            false,
-
-          error:
-            error.message
-
-        });
-
-    }
-
-  }
-);
-
-
-/* ============================================================
-   27. 404
-   ============================================================ */
-
-app.use(
-  (
-    req,
-    res
-  ) => {
-
-    return res
-      .status(404)
-      .json({
-
-        ok:
-          false,
-
+      const status =
+        Number(error?.status) >= 400
+          ? Number(error.status)
+          : 500;
+
+      return res.status(status).json({
+        ok: false,
         error:
-          "Route not found",
-
-        path:
-          req.path
-
+          status === 429
+            ? "AI quota has been reached. Please try again later."
+            : "FinSight could not answer that question."
       });
-
+    }
   }
 );
 
 
-/* ============================================================
-   28. ERROR HANDLER
-   ============================================================ */
-
-app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
-
-    console.error(
-      "Unhandled FinSight error:",
-      error
-    );
-
-
-    if (
-      error instanceof
-      multer.MulterError
-    ) {
-
-      return res
-        .status(400)
-        .json({
-
-          error:
-
-            "File upload error: "
-
-            +
-
-            error.message
-
-        });
-
-    }
-
-
-    return res
-      .status(500)
-      .json({
-
-        error:
-          error.message ||
-          "Unexpected server error."
-
-      });
-
-  }
-);
-
-
-/* ============================================================
-   29. START
-   ============================================================ */
-
-async function boot() {
-
-  try {
-
-    if (pool) {
-
-      await initDatabase();
-
-    }
-
-  }
-
-  catch (
-    error
-  ) {
-
-    console.error(
-      "Database initialization failed:",
-      error.message
-    );
-
-  }
-
-
-  app.listen(
-    PORT,
-    "0.0.0.0",
-    () => {
-
-      console.log(
-        `FinSight AI running on port ${PORT}`
-      );
-
-
-      console.log(
-        `Gemini: ${
-          GEMINI_API_KEY
-            ? "READY"
-            : "NOT CONFIGURED"
-        }`
-      );
-
-
-      console.log(
-        "PDF text parsing: LOCAL; financial extraction: GEMINI"
-      );
-
-      console.log(
-        "Gemini scope: financial extraction + qualitative analysis"
-      );
-
-      console.log(
-        `Alpha Vantage: ${
-          ALPHA_VANTAGE_API_KEY
-            ? "READY"
-            : "NOT CONFIGURED"
-        }`
-      );
-
-
-      console.log(
-        `Database: ${
-          databaseEnabled
-            ? "CONFIGURED"
-            : "NOT CONFIGURED"
-        }`
-      );
-
-
-      console.log(
-        "Annual-report financial extraction: READY"
-      );
-
-
-      console.log(
-        "Multi-report analysis: READY"
-      );
-
-
-      console.log(
-        "Report-grounded Q&A: READY"
-      );
-
-    }
-  );
-
-}
-
-
-boot();
