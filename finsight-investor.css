@@ -819,7 +819,7 @@ a {
 .financial-table {
   width: 100%;
 
-  min-width: 760px;
+  min-width: 0;
 
   border-collapse: collapse;
 
@@ -836,13 +836,24 @@ a {
   vertical-align: middle;
 }
 
+.financial-table th,
+.financial-table td {
+  white-space: nowrap;
+}
+
 .financial-table th:first-child,
 .financial-table td:first-child {
-  min-width: 230px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+
+  min-width: 150px;
 
   text-align: left;
 
   font-weight: 800;
+
+  background: var(--surface);
 }
 
 .financial-table thead th {
@@ -1864,6 +1875,20 @@ textarea:focus-visible {
 .top-actions button[hidden],
 .admin-download[hidden] {
   display: none;
+}
+
+@media (max-width: 900px) {
+  .financial-table th,
+  .financial-table td {
+    padding: 14px 12px;
+
+    font-size: 14px;
+  }
+
+  .financial-table th:first-child,
+  .financial-table td:first-child {
+    min-width: 128px;
+  }
 }
 
 @media (max-width: 760px) {
