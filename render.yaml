@@ -1,29 +1,24 @@
 services:
   - type: web
-    name: finsight-ai
+    name: finsight
     runtime: node
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /healthz
-
     envVars:
       - key: GEMINI_API_KEY
         sync: false
-
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
-
-      - key: FINSIGHT_ACCESS_PASSWORD
+      - key: GEMINI_FALLBACK_MODEL
         sync: false
-
-      - key: FINSIGHT_ADMIN_PASSWORD
-        sync: false
-
       - key: DATABASE_URL
         sync: false
-
       - key: DATABASE_SSL
         value: "true"
-
+      - key: FINSIGHT_PASSWORD
+        sync: false
+      - key: FINSIGHT_ADMIN_PASSWORD
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
