@@ -874,16 +874,19 @@ a {
   position: relative;
 
   width: 100%;
-  min-height: 430px;
+  height: 420px;
 
-  padding: 12px 0;
+  overflow: hidden;
 }
 
 #performanceChart {
-  width: 100%;
-  max-width: 100%;
+  position: absolute;
+  inset: 0;
 
-  min-height: 400px;
+  display: block;
+
+  width: 100%;
+  height: 100%;
 }
 
 
@@ -1133,12 +1136,7 @@ a {
 }
 
 .section-panel {
-  display: grid;
-
-  grid-template-columns:
-    repeat(2, minmax(0, 1fr));
-
-  gap: 16px;
+  display: block;
 }
 
 .panel-card {
@@ -1668,11 +1666,7 @@ a {
   }
 
   .chart-shell {
-    min-height: 320px;
-  }
-
-  #performanceChart {
-    min-height: 300px;
+    height: 320px;
   }
 
   .score-layout {
@@ -1800,4 +1794,80 @@ textarea:focus-visible {
     break-inside: avoid;
   }
 
+}
+
+
+/* ==========================================================
+   ADDITIONS (v5)
+   ========================================================== */
+
+.report-upload-card.uploading {
+  pointer-events: none;
+}
+
+.report-upload-card.uploading .file-button {
+  opacity: 0.6;
+}
+
+.panel-grid {
+  display: grid;
+
+  grid-template-columns:
+    repeat(2, minmax(0, 1fr));
+
+  gap: 16px;
+}
+
+.panel-card {
+  min-height: 0;
+}
+
+.panel-card strong {
+  overflow-wrap: anywhere;
+}
+
+.evidence-warnings {
+  margin-top: 24px;
+
+  padding: 26px;
+
+  border: 1px solid var(--border);
+  border-radius: 12px;
+
+  background: var(--surface-soft);
+}
+
+.evidence-warnings h4 {
+  margin: 0 0 12px;
+}
+
+.evidence-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+
+  color: var(--ink-2);
+
+  line-height: 1.6;
+}
+
+.evidence-warnings p,
+.checklist-note,
+.score-footnote {
+  margin: 12px 0 0;
+
+  color: var(--muted);
+
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.top-actions button[hidden],
+.admin-download[hidden] {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
 }
