@@ -35,7 +35,7 @@
 
       <div class="brand">
         <strong>FinSight</strong>
-        <span>INVESTOR INTELLIGENCE</span>
+        <span>REPORT DASHBOARD</span>
       </div>
 
       <h1>Enter FinSight</h1>
@@ -67,6 +67,7 @@
             name="password"
             type="password"
             autocomplete="current-password"
+            required
           >
         </label>
 
@@ -116,14 +117,14 @@
 
       <div class="top-actions">
 
-        <a
-          class="secondary admin-download"
-          href="/api/admin/usage.xlsx"
+        <button
           id="usageDownload"
+          class="secondary admin-download"
+          type="button"
           hidden
         >
           Download usage Excel
-        </a>
+        </button>
 
         <button
           id="logoutButton"
@@ -170,7 +171,7 @@
         </div>
 
 
-        <div class="report-upload-card">
+        <div id="uploadCard" class="report-upload-card">
 
           <input
             id="companyFile"
@@ -496,144 +497,6 @@
           <div
             id="sectionPanel"
             class="section-panel"
-          ></div>
-
-        </section>
-
-
-        <!-- ================================================
-             ANNUAL REPORT AI
-             ================================================ -->
-
-        <section
-          id="annualReportAISection"
-          class="research-section ai-section"
-        >
-
-          <div class="section-heading">
-
-            <div>
-
-              <span class="eyebrow">
-                FINSIGHT AI
-              </span>
-
-              <h3>
-                Annual-report intelligence
-              </h3>
-
-            </div>
-
-            <span class="evidence-badge">
-              EVIDENCE GROUNDED
-            </span>
-
-          </div>
-
-
-          <p class="section-intro">
-            Analyze management commentary, risks, auditor
-            observations, governance, capital allocation and
-            other qualitative evidence contained in the uploaded
-            annual report.
-          </p>
-
-
-          <div class="ai-actions">
-
-            <button
-              id="runAIAnalysis"
-              class="primary"
-              type="button"
-            >
-              Run AI analysis
-            </button>
-
-          </div>
-
-
-          <div
-            id="aiAnalysisStatus"
-            class="status-message"
-            aria-live="polite"
-          ></div>
-
-
-          <div
-            id="aiAnalysisResult"
-            class="ai-result"
-            hidden
-          ></div>
-
-        </section>
-
-
-        <!-- ================================================
-             ASK FINSIGHT
-             ================================================ -->
-
-        <section
-          id="askFinSightSection"
-          class="research-section ai-section"
-        >
-
-          <div class="section-heading">
-
-            <div>
-
-              <span class="eyebrow">
-                ASK FINSIGHT
-              </span>
-
-              <h3>
-                Ask about the annual report
-              </h3>
-
-            </div>
-
-          </div>
-
-
-          <p class="section-intro">
-            Ask questions using the financial data and report
-            evidence already extracted for this company.
-          </p>
-
-
-          <form
-            id="askForm"
-            class="ask-form"
-          >
-
-            <textarea
-              id="askQuestion"
-              rows="4"
-              placeholder="Example: How has cash generation changed across the reporting years?"
-              required
-            ></textarea>
-
-            <button
-              id="askButton"
-              class="primary"
-              type="submit"
-            >
-              Ask FinSight
-            </button>
-
-          </form>
-
-
-          <div
-            id="askStatus"
-            class="status-message"
-            aria-live="polite"
-          ></div>
-
-
-          <div
-            id="askResult"
-            class="ai-result"
-            hidden
           ></div>
 
         </section>
