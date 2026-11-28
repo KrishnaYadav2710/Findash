@@ -11,6 +11,7 @@
 import "dotenv/config";
 
 import crypto from "node:crypto";
+import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +21,9 @@ import pg from "pg";
 import ExcelJS from "exceljs";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
+
+// Prefer IPv4 first: Render instances have no outbound IPv6.
+dns.setDefaultResultOrder("ipv4first");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -128,6 +132,18 @@ async function initDatabase() {
       error.code || "",
       error.message
     );
+
+    if (["ENETUNREACH", "ENOTFOUND", "EAI_AGAIN"].includes(error.code)) {
+      console.error(
+        "Hint: use the Supabase SESSION POOLER connection string " +
+          "(host like aws-0-<region>.pooler.supabase.com, user postgres.<project-ref>) " +
+          "in DATABASE_URL. The direct db.<ref>.supabase.co host is IPv6-only and " +
+          "cannot be reached from Render."
+      );
+    } else if (error.code === "28P01") {
+      console.error("Hint: wrong database password in DATABASE_URL.");
+    }
+
     return false;
   }
 }
@@ -420,6 +436,9 @@ const NUMERIC_FIELDS = [
   "ebitda",
   "net_income",
   "finance_cost",
+  "profit_before_tax",
+  "depreciation_amortisation",
+  "exceptional_items",
   "total_assets",
   "current_assets",
   "current_liabilities",
@@ -431,6 +450,14 @@ const NUMERIC_FIELDS = [
   "accounts_payable",
   "operating_cash_flow",
   "capex"
+];
+
+// Inputs needed to derive EBITDA when the report does not print it.
+const EBITDA_INPUTS = [
+  "profit_before_tax",
+  "depreciation_amortisation",
+  "finance_cost",
+  "other_income"
 ];
 
 // Fields whose absence usually means a statement was not searched.
@@ -500,6 +527,9 @@ function buildResponseSchema() {
     ebitda: nullableNumber("EBITDA if reported or reliably derivable."),
     net_income: nullableNumber("Profit/loss for the year after tax (total, including non-controlling interest)."),
     finance_cost: nullableNumber("Finance costs (positive number)."),
+    profit_before_tax: nullableNumber("Profit/loss before tax (and before share of JV/associates only if the statement shows it separately above PBT; use the PBT line as printed)."),
+    depreciation_amortisation: nullableNumber("Depreciation and amortisation expense (positive number)."),
+    exceptional_items: nullableNumber("Exceptional items included in profit before tax, signed as a P&L effect: gain positive, expense negative. 0 if none shown."),
     total_assets: nullableNumber("Total assets."),
     current_assets: nullableNumber("Total current assets."),
     current_liabilities: nullableNumber("Total current liabilities."),
@@ -597,7 +627,10 @@ Balance-sheet and cash-flow items are as important as income-statement items. Do
 DEFINITIONS
 - revenue: revenue from operations (not total income).
 - total_income: total income as printed; other_income: other income as printed.
-- ebitda: use the reported EBITDA if the report presents one in the audited statements or key financial summary. Otherwise derive it ONLY if every input is printed: profit before tax (before exceptional items) + finance costs + depreciation and amortisation - other income. State the derivation in extraction_notes. If an input is missing, return null.
+- ebitda: the EBITDA exactly as the report presents it (audited statements, key financial summary, MD&A or directors' report). If the report does not present EBITDA, return null for ebitda - FinSight will derive it - but you MUST then fill profit_before_tax, depreciation_amortisation, finance_cost, other_income and exceptional_items from the statement of profit and loss.
+- profit_before_tax: the "Profit before tax" line (after exceptional items, as printed). For groups with share of profit of joint ventures/associates shown above PBT, use the line the statement labels profit before tax.
+- depreciation_amortisation: "Depreciation and amortisation expense" from the statement of profit and loss (positive number).
+- exceptional_items: exceptional items shown in the statement of profit and loss, as a P&L effect (gain positive, expense negative); 0 if none.
 - net_income: profit/loss for the year after tax, total (including non-controlling interest), as printed in the statement of profit and loss.
 - finance_cost: finance costs / interest expense, positive number.
 - total_equity: total equity (including non-controlling interest) as printed on the balance sheet.
@@ -629,6 +662,7 @@ function buildGapFillPrompt(gaps, basis) {
   return `A first extraction of this annual report left the fields below empty. Search the report again, specifically:
 - balance sheet and its notes for: total_assets, current_assets, current_liabilities, total_equity, total_debt (borrowings note), cash (cash and cash equivalents note), accounts_receivable (trade receivables note);
 - cash flow statement for: operating_cash_flow, and the investing section for capex.
+For EBITDA: if the report does not print an EBITDA figure, fill profit_before_tax, depreciation_amortisation, finance_cost, other_income and exceptional_items from the statement of profit and loss instead (FinSight derives EBITDA from them).
 Use ${basis || "Consolidated"} statements. Return the same JSON structure, with one object per financial year listed below. Fill the listed fields only when the report supports them; otherwise leave them null. Apply the same definitions and units rules as before (values in the printed unit, set source_unit).
 
 Missing fields:
@@ -1217,6 +1251,44 @@ function normalizeRow(raw) {
   return { row, warnings };
 }
 
+/**
+ * If the report did not print EBITDA, derive it from reported inputs:
+ *   EBITDA = PBT - exceptional items + finance cost + D&A - other income
+ * Only when every input is available. Never overwrites a reported value.
+ */
+function deriveEbitda(row) {
+  if (row.ebitda !== null) {
+    return false;
+  }
+
+  const inputs = EBITDA_INPUTS.map(field => row[field]);
+
+  if (inputs.some(value => value === null)) {
+    return false;
+  }
+
+  const exceptional = row.exceptional_items ?? 0;
+
+  row.ebitda = roundMoney(
+    row.profit_before_tax -
+      exceptional +
+      row.finance_cost +
+      row.depreciation_amortisation -
+      row.other_income
+  );
+
+  const note =
+    "EBITDA derived by FinSight: profit before tax" +
+    (exceptional ? " - exceptional items" : "") +
+    " + finance costs + depreciation & amortisation - other income.";
+
+  row.extraction_notes = row.extraction_notes
+    ? `${row.extraction_notes} ${note}`.slice(0, 700)
+    : note;
+
+  return true;
+}
+
 function filledCount(row) {
   return NUMERIC_FIELDS.filter(field => row[field] !== null).length;
 }
@@ -1298,6 +1370,8 @@ function normalizeExtraction(raw) {
   }
 
   const financials = [...byYear.values()].sort((a, b) => a.year - b.year);
+
+  financials.forEach(deriveEbitda);
 
   if (rows.length > 1) {
     const original = rows.map(row => row.year);
@@ -1457,7 +1531,14 @@ function findGaps(financials) {
     .map(row => ({
       financial_year: row.financial_year,
       year: row.year,
-      fields: CORE_FIELDS.filter(field => row[field] === null)
+      fields: [
+        ...CORE_FIELDS.filter(field => row[field] === null),
+        ...(row.ebitda === null
+          ? ["ebitda", ...EBITDA_INPUTS, "exceptional_items"].filter(
+              field => row[field] === null
+            )
+          : [])
+      ]
     }))
     .filter(gap => gap.fields.length > 0);
 }
@@ -1477,7 +1558,7 @@ function mergeGapFill(financials, fillRows) {
       continue;
     }
 
-    for (const field of CORE_FIELDS) {
+    for (const field of [...CORE_FIELDS, "ebitda", ...EBITDA_INPUTS, "exceptional_items"]) {
       if (row[field] === null && donor[field] !== null) {
         row[field] = donor[field];
         filled.push(`${row.financial_year}:${field}`);
@@ -1491,6 +1572,10 @@ function mergeGapFill(financials, fillRows) {
     }
 
     row.source_pages.sort((a, b) => a - b);
+
+    if (deriveEbitda(row)) {
+      filled.push(`${row.financial_year}:ebitda`);
+    }
   }
 
   return filled;
